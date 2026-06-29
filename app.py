@@ -1,6 +1,8 @@
 import time
 import threading
 import json
+import io
+import urllib.request
 from datetime import datetime
 
 import streamlit as st
@@ -18,26 +20,33 @@ LOOP_INTERVAL = 30
 MAX_LOG_LINES = 200
 THREAD_NAME = "MarketWorker"
 
-# label -> (yahoo_ticker, ทศนิยม, suffix)
-ASSETS = {
-    "ทองคำ (GC=F)":   ("GC=F",      2, ""),
-    "EUR/USD":        ("EURUSD=X",  4, ""),
-    "Dow (YM=F)":     ("YM=F",      0, ""),
-    "S&P (ES=F)":     ("ES=F",      2, ""),
-    "Nasdaq (NQ=F)":  ("NQ=F",      2, ""),
-    "Bitcoin (BTC)":  ("BTC-USD",   0, ""),
-    "DXY":            ("DX-Y.NYB",  2, ""),
-    "US 10Y Yield":   ("^TNX",      2, "%"),
-}
+# การ์ดภาวะตลาด: yfinance + 1 ตัวจาก FRED (TIPS)
+CARDS = [
+    {"label": "ทองคำ (GC=F)",      "src": "yf", "ticker": "GC=F",     "dec": 2, "suf": ""},
+    {"label": "EUR/USD",           "src": "yf", "ticker": "EURUSD=X", "dec": 4, "suf": ""},
+    {"label": "Dow (YM=F)",        "src": "yf", "ticker": "YM=F",     "dec": 0, "suf": ""},
+    {"label": "S&P (ES=F)",        "src": "yf", "ticker": "ES=F",     "dec": 2, "suf": ""},
+    {"label": "Nasdaq (NQ=F)",     "src": "yf", "ticker": "NQ=F",     "dec": 2, "suf": ""},
+    {"label": "Bitcoin (BTC)",     "src": "yf", "ticker": "BTC-USD",  "dec": 0, "suf": ""},
+    {"label": "DXY",               "src": "yf", "ticker": "DX-Y.NYB", "dec": 2, "suf": ""},
+    {"label": "US 10Y Yield",      "src": "yf", "ticker": "^TNX",     "dec": 2, "suf": "%"},
+    {"label": "US 10Y Real (TIPS)", "src": "fred", "series": "DFII10"},
+]
 
-ANALYSIS_ASSETS = ["ทองคำ (GC=F)", "EUR/USD", "Dow (YM=F)", "Bitcoin (BTC)"]
+# สินทรัพย์ที่แสดงตารางวิเคราะห์ (label, ticker, ทศนิยม)
+ANALYSIS_ASSETS = [
+    ("ทองคำ (GC=F)", "GC=F", 2),
+    ("EUR/USD", "EURUSD=X", 4),
+    ("Dow (YM=F)", "YM=F", 0),
+    ("Bitcoin (BTC)", "BTC-USD", 0),
+]
 
 
 # ============================================================
-#  DATA LAYER  (yfinance + cache)
+#  DATA LAYER
 # ============================================================
 def _raw_quote(ticker: str):
-    """ดึงราคา + %เปลี่ยน + OHLC แท่งก่อนหน้า + ราคาปิดย้อนหลัง. ไม่มี st.* -> ใช้ใน thread ได้"""
+    """ราคา + %เปลี่ยน + ราคาปิดย้อนหลัง 10 วัน. ไม่มี st.* -> ใช้ใน thread ได้"""
     df = yf.Ticker(ticker).history(period="15d", interval="1d")
     if df is None or df.empty:
         return None
@@ -45,18 +54,49 @@ def _raw_quote(ticker: str):
     if len(df) < 2:
         return None
     closes = [float(c) for c in df["Close"].tolist()]
-    price = closes[-1]
-    prev_close = closes[-2]
-    change_pct = (price - prev_close) / prev_close * 100 if prev_close else 0.0
-    prev = df.iloc[-2]   # แท่งวันก่อนหน้า (สำหรับ Classic Pivot)
+    price, prev_close = closes[-1], closes[-2]
     return {
         "price": price,
-        "change_pct": change_pct,
-        "prev_high": float(prev["High"]),
-        "prev_low": float(prev["Low"]),
-        "prev_close": prev_close,
+        "change_pct": (price - prev_close) / prev_close * 100 if prev_close else 0.0,
         "closes": closes[-10:],
     }
+
+
+def _prev_session_hl(ticker: str):
+    """หา High/Low/Close ของ 'วันก่อนหน้า' จากข้อมูลรายชั่วโมง (เลี่ยง H/L รายวันที่เพี้ยน)"""
+    df = yf.Ticker(ticker).history(period="7d", interval="60m")
+    if df is None or df.empty:
+        return None
+    df = df.dropna()
+    if df.empty:
+        return None
+    dates = sorted(set(df.index.date))
+    if len(dates) < 2:
+        return None
+    prev_date = dates[-2]
+    day = df[df.index.date == prev_date]
+    if day.empty:
+        return None
+    h, l, c = float(day["High"].max()), float(day["Low"].min()), float(day["Close"].iloc[-1])
+    if h <= l:
+        return None
+    return {"high": h, "low": l, "close": c, "date": str(prev_date)}
+
+
+def _fetch_fred(series_id: str):
+    """ดึงค่าล่าสุดจาก FRED ผ่านลิงก์ CSV สาธารณะ (ไม่ต้องใช้ API key)"""
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        text = resp.read().decode("utf-8")
+    df = pd.read_csv(io.StringIO(text))
+    val_col = df.columns[-1]
+    df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
+    df = df.dropna(subset=[val_col])
+    if df.empty:
+        return None
+    value = float(df[val_col].iloc[-1])
+    prev = float(df[val_col].iloc[-2]) if len(df) >= 2 else value
+    return {"value": value, "change_pp": value - prev}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -64,36 +104,42 @@ def fetch_quote(ticker: str):
     return _raw_quote(ticker)
 
 
-def compute_levels(q):
-    """กันพลาด 2 ชั้น:
-       - ถ้าแท่งวันก่อนมี range จริง (High>Low) -> Classic Pivot
-       - ถ้า H/L เพี้ยน (เท่ากัน) -> ใช้กรอบราคาปิด 10 วันล่าสุด (ใช้แค่ Close ที่เชื่อถือได้)
-    """
-    h, l, c = q["prev_high"], q["prev_low"], q["prev_close"]
-    if h > l:
-        pp = (h + l + c) / 3
-        levels = {
-            "R2": pp + (h - l),
-            "R1": 2 * pp - l,
-            "PP": pp,
-            "S1": 2 * pp - h,
-            "S2": pp - (h - l),
-        }
-        return levels, "Classic Pivot (แท่งวันก่อนหน้า)"
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_prev_session(ticker: str):
+    return _prev_session_hl(ticker)
 
-    closes = q["closes"]
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_fred(series_id: str):
+    try:
+        return _fetch_fred(series_id)
+    except Exception:
+        return None
+
+
+# ============================================================
+#  LEVEL MATH
+# ============================================================
+def classic_pivot(h, l, c):
+    pp = (h + l + c) / 3
+    return {"R2": pp + (h - l), "R1": 2 * pp - l, "PP": pp,
+            "S1": 2 * pp - h, "S2": pp - (h - l)}
+
+
+def swing_range(closes):
     hi, lo = max(closes), min(closes)
     if hi == lo:
-        return {k: hi for k in ["R2", "R1", "PP", "S1", "S2"]}, "ข้อมูลไม่พอคำนวณ"
+        return {k: hi for k in ["R2", "R1", "PP", "S1", "S2"]}
     mid = (hi + lo) / 2
-    levels = {
-        "R2": hi,
-        "R1": (hi + mid) / 2,
-        "PP": mid,
-        "S1": (mid + lo) / 2,
-        "S2": lo,
-    }
-    return levels, "กรอบราคาปิด 10 วันล่าสุด"
+    return {"R2": hi, "R1": (hi + mid) / 2, "PP": mid,
+            "S1": (mid + lo) / 2, "S2": lo}
+
+
+def level_df(levels, dec):
+    return pd.DataFrame({
+        "ระดับ": ["R2 แนวต้าน", "R1 แนวต้าน", "Pivot/กึ่งกลาง", "S1 แนวรับ", "S2 แนวรับ"],
+        "ราคา": [f"{levels[k]:,.{dec}f}" for k in ["R2", "R1", "PP", "S1", "S2"]],
+    })
 
 
 def trend_label(price, pp):
@@ -142,7 +188,7 @@ def read_logs(limit: int = 10):
 
 
 # ============================================================
-#  BACKGROUND WORKER (เตรียมไว้ทำ "แจ้งเตือน")
+#  BACKGROUND WORKER (เตรียมไว้ทำแจ้งเตือนภายหลัง)
 # ============================================================
 def run_strategy() -> str:
     q = _raw_quote("GC=F")
@@ -183,7 +229,7 @@ if st.session_state.bot_running:
 #  UI
 # ============================================================
 st.title("เลขาตลาด • Multi-Asset Dashboard")
-st.caption("ข้อมูลจาก Yahoo Finance (yfinance) • แนวรับ/ต้านปรับวิธีคำนวณอัตโนมัติตามคุณภาพข้อมูล")
+st.caption("ข้อมูล: Yahoo Finance (ราคา) + FRED (TIPS) • Pivot รายวันจาก H/L รายชั่วโมง + กรอบ 10 วัน")
 
 with st.sidebar:
     st.header("⚙️ ระบบควบคุม")
@@ -198,40 +244,66 @@ with st.sidebar:
             save_bot_status(False); st.session_state.bot_running = False; st.rerun()
     st.divider()
     if st.button("🔄 รีเฟรชข้อมูลทันที", use_container_width=True):
-        fetch_quote.clear(); st.rerun()
+        fetch_quote.clear(); fetch_prev_session.clear(); fetch_fred.clear(); st.rerun()
+
+
+def render_card(col, spec):
+    if spec["src"] == "yf":
+        q = fetch_quote(spec["ticker"])
+        if q:
+            col.metric(spec["label"], f"{q['price']:,.{spec['dec']}f}{spec['suf']}",
+                       f"{q['change_pct']:+.2f}%")
+        else:
+            col.metric(spec["label"], "n/a", "ดึงไม่ได้")
+    else:  # fred
+        d = fetch_fred(spec["series"])
+        if d:
+            col.metric(spec["label"], f"{d['value']:.2f}%", f"{d['change_pp']:+.2f} pp")
+        else:
+            col.metric(spec["label"], "n/a", "FRED ดึงไม่ได้")
 
 
 @st.fragment(run_every="30s")
 def market_panel():
     st.subheader("📊 ภาวะตลาด (อัปเดตอัตโนมัติ)")
-    labels = list(ASSETS.keys())
-    for row_start in range(0, len(labels), 4):
+    for i in range(0, len(CARDS), 4):
         cols = st.columns(4)
-        for col, label in zip(cols, labels[row_start:row_start + 4]):
-            ticker, dec, suf = ASSETS[label]
-            q = fetch_quote(ticker)
-            if q:
-                col.metric(label, f"{q['price']:,.{dec}f}{suf}", f"{q['change_pct']:+.2f}%")
-            else:
-                col.metric(label, "n/a", "ดึงไม่ได้")
+        for col, spec in zip(cols, CARDS[i:i + 4]):
+            render_card(col, spec)
 
     st.divider()
-    tabs = st.tabs(ANALYSIS_ASSETS)
-    for tab, label in zip(tabs, ANALYSIS_ASSETS):
+    tabs = st.tabs([a[0] for a in ANALYSIS_ASSETS])
+    for tab, (label, ticker, dec) in zip(tabs, ANALYSIS_ASSETS):
         with tab:
-            ticker, dec, _ = ASSETS[label]
             q = fetch_quote(ticker)
             if not q:
                 st.warning(f"ดึงข้อมูล {label} ไม่ได้ในรอบนี้"); continue
-            piv, method = compute_levels(q)
-            st.markdown(f"### {label} — {trend_label(q['price'], piv['PP'])}")
+
+            # --- Pivot รายวัน (จาก H/L รายชั่วโมง) ---
+            sess = fetch_prev_session(ticker)
+            daily, daily_note = None, ""
+            if sess:
+                daily = classic_pivot(sess["high"], sess["low"], sess["close"])
+                daily_note = f"Classic Pivot • H/L รายชั่วโมงของวันที่ {sess['date']}"
+
+            rng = swing_range(q["closes"])
+            bias_ref = daily["PP"] if daily else rng["PP"]
+
+            st.markdown(f"### {label} — {trend_label(q['price'], bias_ref)}")
             st.caption(f"ราคาล่าสุด {q['price']:,.{dec}f}  ({q['change_pct']:+.2f}%)")
-            df = pd.DataFrame({
-                "ระดับ": ["R2 แนวต้าน", "R1 แนวต้าน", "Pivot/กึ่งกลาง", "S1 แนวรับ", "S2 แนวรับ"],
-                "ราคา": [f"{piv[k]:,.{dec}f}" for k in ["R2", "R1", "PP", "S1", "S2"]],
-            })
-            st.table(df)
-            st.caption(f"วิธีคำนวณ: {method}")
+
+            cA, cB = st.columns(2)
+            with cA:
+                st.markdown("**📍 Pivot รายวัน (Day Trade)**")
+                if daily:
+                    st.table(level_df(daily, dec))
+                    st.caption(daily_note)
+                else:
+                    st.info("ยังดึง H/L รายชั่วโมงไม่ได้ — ใช้กรอบ 10 วันทางขวาแทนไปก่อน")
+            with cB:
+                st.markdown("**🗺️ กรอบภาพใหญ่ 10 วัน (Swing)**")
+                st.table(level_df(rng, dec))
+                st.caption("จากกรอบราคาปิด 10 วันล่าสุด")
 
 
 market_panel()
