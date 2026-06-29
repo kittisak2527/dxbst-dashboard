@@ -30,50 +30,74 @@ ASSETS = {
     "US 10Y Yield":   ("^TNX",      2, "%"),
 }
 
-# สินทรัพย์ที่จะแสดงตารางวิเคราะห์เชิงลึก (แนวรับ/ต้านคำนวณจริง)
 ANALYSIS_ASSETS = ["ทองคำ (GC=F)", "EUR/USD", "Dow (YM=F)", "Bitcoin (BTC)"]
 
 
 # ============================================================
-#  DATA LAYER  (yfinance + cache)  — แทนการ scrape
+#  DATA LAYER  (yfinance + cache)
 # ============================================================
 def _raw_quote(ticker: str):
-    """ดึงราคา + %เปลี่ยน + OHLC แท่งก่อนหน้า. ไม่มี st.* -> ใช้ใน thread ได้"""
-    df = yf.Ticker(ticker).history(period="7d", interval="1d")
-    if df is None or df.empty or len(df) < 2:
+    """ดึงราคา + %เปลี่ยน + OHLC แท่งก่อนหน้า + ราคาปิดย้อนหลัง. ไม่มี st.* -> ใช้ใน thread ได้"""
+    df = yf.Ticker(ticker).history(period="15d", interval="1d")
+    if df is None or df.empty:
         return None
     df = df.dropna()
-    last, prev = df.iloc[-1], df.iloc[-2]
-    price, prev_close = float(last["Close"]), float(prev["Close"])
+    if len(df) < 2:
+        return None
+    closes = [float(c) for c in df["Close"].tolist()]
+    price = closes[-1]
+    prev_close = closes[-2]
+    change_pct = (price - prev_close) / prev_close * 100 if prev_close else 0.0
+    prev = df.iloc[-2]   # แท่งวันก่อนหน้า (สำหรับ Classic Pivot)
     return {
         "price": price,
-        "change_pct": (price - prev_close) / prev_close * 100 if prev_close else 0.0,
+        "change_pct": change_pct,
         "prev_high": float(prev["High"]),
         "prev_low": float(prev["Low"]),
         "prev_close": prev_close,
+        "closes": closes[-10:],
     }
 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_quote(ticker: str):
-    """เวอร์ชัน cache สำหรับ UI (ยิง network จริงไม่เกินทุก 60 วิ ต่อ ticker)"""
     return _raw_quote(ticker)
 
 
-def pivot_levels(high, low, close):
-    """Classic floor-trader pivots — คำนวณจากแท่งวันก่อนหน้า (ไม่ใช่เดามือ)"""
-    pp = (high + low + close) / 3
-    return {
-        "R2": pp + (high - low),
-        "R1": 2 * pp - low,
-        "PP": pp,
-        "S1": 2 * pp - high,
-        "S2": pp - (high - low),
+def compute_levels(q):
+    """กันพลาด 2 ชั้น:
+       - ถ้าแท่งวันก่อนมี range จริง (High>Low) -> Classic Pivot
+       - ถ้า H/L เพี้ยน (เท่ากัน) -> ใช้กรอบราคาปิด 10 วันล่าสุด (ใช้แค่ Close ที่เชื่อถือได้)
+    """
+    h, l, c = q["prev_high"], q["prev_low"], q["prev_close"]
+    if h > l:
+        pp = (h + l + c) / 3
+        levels = {
+            "R2": pp + (h - l),
+            "R1": 2 * pp - l,
+            "PP": pp,
+            "S1": 2 * pp - h,
+            "S2": pp - (h - l),
+        }
+        return levels, "Classic Pivot (แท่งวันก่อนหน้า)"
+
+    closes = q["closes"]
+    hi, lo = max(closes), min(closes)
+    if hi == lo:
+        return {k: hi for k in ["R2", "R1", "PP", "S1", "S2"]}, "ข้อมูลไม่พอคำนวณ"
+    mid = (hi + lo) / 2
+    levels = {
+        "R2": hi,
+        "R1": (hi + mid) / 2,
+        "PP": mid,
+        "S1": (mid + lo) / 2,
+        "S2": lo,
     }
+    return levels, "กรอบราคาปิด 10 วันล่าสุด"
 
 
 def trend_label(price, pp):
-    return "🟢 Bullish (เหนือ Pivot)" if price > pp else "🔴 Bearish (ใต้ Pivot)"
+    return "🟢 Bullish (เหนือกึ่งกลาง)" if price > pp else "🔴 Bearish (ใต้กึ่งกลาง)"
 
 
 # ============================================================
@@ -118,15 +142,12 @@ def read_logs(limit: int = 10):
 
 
 # ============================================================
-#  BACKGROUND WORKER (สำหรับต่อยอด "แจ้งเตือน" ภายหลัง)
-#  หมายเหตุ: บน Streamlit Cloud thread เบื้องหลังไม่เสถียร
-#  -> หน้าจอไม่ได้พึ่ง worker, ดึงข้อมูลผ่าน cache แทน
+#  BACKGROUND WORKER (เตรียมไว้ทำ "แจ้งเตือน")
 # ============================================================
 def run_strategy() -> str:
-    q = _raw_quote("GC=F")              # ใช้ตัวไม่ cache (อยู่นอก context ของ Streamlit)
+    q = _raw_quote("GC=F")
     if not q:
         return "ดึงราคาทองไม่สำเร็จรอบนี้"
-    # TODO: ใส่เงื่อนไขแจ้งเตือนจริงที่นี่ (เช่น ราคาแตะแนวรับ -> ยิง LINE/Telegram)
     return f"ทองล่าสุด {q['price']:,.2f} ({q['change_pct']:+.2f}%)"
 
 
@@ -162,7 +183,7 @@ if st.session_state.bot_running:
 #  UI
 # ============================================================
 st.title("เลขาตลาด • Multi-Asset Dashboard")
-st.caption("ข้อมูลจาก Yahoo Finance (yfinance) • แนวรับ/ต้านคำนวณจาก Classic Pivot")
+st.caption("ข้อมูลจาก Yahoo Finance (yfinance) • แนวรับ/ต้านปรับวิธีคำนวณอัตโนมัติตามคุณภาพข้อมูล")
 
 with st.sidebar:
     st.header("⚙️ ระบบควบคุม")
@@ -202,15 +223,15 @@ def market_panel():
             q = fetch_quote(ticker)
             if not q:
                 st.warning(f"ดึงข้อมูล {label} ไม่ได้ในรอบนี้"); continue
-            piv = pivot_levels(q["prev_high"], q["prev_low"], q["prev_close"])
+            piv, method = compute_levels(q)
             st.markdown(f"### {label} — {trend_label(q['price'], piv['PP'])}")
             st.caption(f"ราคาล่าสุด {q['price']:,.{dec}f}  ({q['change_pct']:+.2f}%)")
             df = pd.DataFrame({
-                "ระดับ": ["R2 แนวต้าน", "R1 แนวต้าน", "Pivot", "S1 แนวรับ", "S2 แนวรับ"],
+                "ระดับ": ["R2 แนวต้าน", "R1 แนวต้าน", "Pivot/กึ่งกลาง", "S1 แนวรับ", "S2 แนวรับ"],
                 "ราคา": [f"{piv[k]:,.{dec}f}" for k in ["R2", "R1", "PP", "S1", "S2"]],
             })
             st.table(df)
-            st.caption("คำนวณจาก Classic Pivot ของแท่งวันก่อนหน้า • อัปเดตอัตโนมัติทุกวัน")
+            st.caption(f"วิธีคำนวณ: {method}")
 
 
 market_panel()
