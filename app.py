@@ -20,26 +20,28 @@ LOOP_INTERVAL = 30
 MAX_LOG_LINES = 200
 THREAD_NAME = "MarketWorker"
 
-# การ์ดภาวะตลาด: yfinance + 1 ตัวจาก FRED (TIPS)
+# การ์ดภาวะตลาด
+#   src=yf -> ดึงจาก Yahoo (ต้องมี ticker, dec, suf, pivot)
+#   src=fred -> ดึงจาก FRED (ต้องมี series)
+#   pivot=True -> มีแท็บแนวรับ/ต้าน
 CARDS = [
-    {"label": "ทองคำ (GC=F)",      "src": "yf", "ticker": "GC=F",     "dec": 2, "suf": ""},
-    {"label": "EUR/USD",           "src": "yf", "ticker": "EURUSD=X", "dec": 4, "suf": ""},
-    {"label": "Dow (YM=F)",        "src": "yf", "ticker": "YM=F",     "dec": 0, "suf": ""},
-    {"label": "S&P (ES=F)",        "src": "yf", "ticker": "ES=F",     "dec": 2, "suf": ""},
-    {"label": "Nasdaq (NQ=F)",     "src": "yf", "ticker": "NQ=F",     "dec": 2, "suf": ""},
-    {"label": "Bitcoin (BTC)",     "src": "yf", "ticker": "BTC-USD",  "dec": 0, "suf": ""},
-    {"label": "DXY",               "src": "yf", "ticker": "DX-Y.NYB", "dec": 2, "suf": ""},
-    {"label": "US 10Y Yield",      "src": "yf", "ticker": "^TNX",     "dec": 2, "suf": "%"},
+    {"label": "ทองคำ (GC=F)",       "src": "yf", "ticker": "GC=F",     "dec": 2, "suf": "", "pivot": True},
+    {"label": "EUR/USD",            "src": "yf", "ticker": "EURUSD=X", "dec": 4, "suf": "", "pivot": True},
+    {"label": "USD/JPY",            "src": "yf", "ticker": "USDJPY=X", "dec": 3, "suf": "", "pivot": True},
+    {"label": "GBP/USD",            "src": "yf", "ticker": "GBPUSD=X", "dec": 4, "suf": "", "pivot": True},
+    {"label": "GBP/JPY",            "src": "yf", "ticker": "GBPJPY=X", "dec": 3, "suf": "", "pivot": True},
+    {"label": "Dow (YM=F)",         "src": "yf", "ticker": "YM=F",     "dec": 0, "suf": "", "pivot": True},
+    {"label": "S&P (ES=F)",         "src": "yf", "ticker": "ES=F",     "dec": 2, "suf": "", "pivot": True},
+    {"label": "Nasdaq (NQ=F)",      "src": "yf", "ticker": "NQ=F",     "dec": 2, "suf": "", "pivot": True},
+    {"label": "Bitcoin (BTC)",      "src": "yf", "ticker": "BTC-USD",  "dec": 0, "suf": "", "pivot": True},
+    {"label": "DXY",                "src": "yf", "ticker": "DX-Y.NYB", "dec": 2, "suf": "",  "pivot": False},
+    {"label": "US 10Y Yield",       "src": "yf", "ticker": "^TNX",     "dec": 2, "suf": "%", "pivot": False},
     {"label": "US 10Y Real (TIPS)", "src": "fred", "series": "DFII10"},
 ]
 
-# สินทรัพย์ที่แสดงตารางวิเคราะห์ (label, ticker, ทศนิยม)
-ANALYSIS_ASSETS = [
-    ("ทองคำ (GC=F)", "GC=F", 2),
-    ("EUR/USD", "EURUSD=X", 4),
-    ("Dow (YM=F)", "YM=F", 0),
-    ("Bitcoin (BTC)", "BTC-USD", 0),
-]
+# แท็บวิเคราะห์ = ทุกการ์ด yfinance ที่ pivot=True
+ANALYSIS_ASSETS = [(c["label"], c["ticker"], c["dec"]) for c in CARDS
+                   if c["src"] == "yf" and c.get("pivot")]
 
 
 # ============================================================
@@ -120,25 +122,45 @@ def fetch_fred(series_id: str):
 # ============================================================
 #  LEVEL MATH
 # ============================================================
+LEVEL_ORDER = ["R3", "R2", "R1", "PP", "S1", "S2", "S3"]
+LEVEL_NAMES = ["R3 แนวต้าน", "R2 แนวต้าน", "R1 แนวต้าน", "Pivot/กึ่งกลาง",
+               "S1 แนวรับ", "S2 แนวรับ", "S3 แนวรับ"]
+
+
 def classic_pivot(h, l, c):
     pp = (h + l + c) / 3
-    return {"R2": pp + (h - l), "R1": 2 * pp - l, "PP": pp,
-            "S1": 2 * pp - h, "S2": pp - (h - l)}
+    return {
+        "R3": h + 2 * (pp - l),
+        "R2": pp + (h - l),
+        "R1": 2 * pp - l,
+        "PP": pp,
+        "S1": 2 * pp - h,
+        "S2": pp - (h - l),
+        "S3": l - 2 * (h - pp),
+    }
 
 
 def swing_range(closes):
     hi, lo = max(closes), min(closes)
     if hi == lo:
-        return {k: hi for k in ["R2", "R1", "PP", "S1", "S2"]}
+        return {k: hi for k in LEVEL_ORDER}
     mid = (hi + lo) / 2
-    return {"R2": hi, "R1": (hi + mid) / 2, "PP": mid,
-            "S1": (mid + lo) / 2, "S2": lo}
+    q = (hi - lo) / 4               # R2=hi, S2=lo ; R3/S3 = ฉายต่อนอกกรอบ
+    return {
+        "R3": mid + 3 * q,
+        "R2": mid + 2 * q,
+        "R1": mid + q,
+        "PP": mid,
+        "S1": mid - q,
+        "S2": mid - 2 * q,
+        "S3": mid - 3 * q,
+    }
 
 
 def level_df(levels, dec):
     return pd.DataFrame({
-        "ระดับ": ["R2 แนวต้าน", "R1 แนวต้าน", "Pivot/กึ่งกลาง", "S1 แนวรับ", "S2 แนวรับ"],
-        "ราคา": [f"{levels[k]:,.{dec}f}" for k in ["R2", "R1", "PP", "S1", "S2"]],
+        "ระดับ": LEVEL_NAMES,
+        "ราคา": [f"{levels[k]:,.{dec}f}" for k in LEVEL_ORDER],
     })
 
 
@@ -279,7 +301,6 @@ def market_panel():
             if not q:
                 st.warning(f"ดึงข้อมูล {label} ไม่ได้ในรอบนี้"); continue
 
-            # --- Pivot รายวัน (จาก H/L รายชั่วโมง) ---
             sess = fetch_prev_session(ticker)
             daily, daily_note = None, ""
             if sess:
