@@ -39,6 +39,21 @@ def get_chain(ticker, expiry):
     return calls, puts
 
 
+@st.cache_data(ttl=3600, show_spinner="กำลังสแกน OI ของแต่ละ expiry เพื่อหางวดหลัก...")
+def best_expiry(ticker, expiries, scan_limit=12):
+    """เลือก expiry ที่ OI รวม (call+put) หนาสุด จากงวดใกล้ ๆ ตาม scan_limit"""
+    best, best_oi = None, -1.0
+    for e in expiries[:scan_limit]:
+        try:
+            c, p = get_chain(ticker, e)
+            tot = float(c["openInterest"].sum() + p["openInterest"].sum())
+        except Exception:
+            tot = 0.0
+        if tot > best_oi:
+            best_oi, best = tot, e
+    return best
+
+
 # ============================================================
 #  METRICS
 # ============================================================
@@ -73,34 +88,46 @@ if spot is None or not expiries:
     st.error("ดึงราคา/วันหมดอายุไม่ได้ในรอบนี้ — ลองรีโหลดหน้าอีกครั้ง")
     st.stop()
 
+# เลือกงวดที่ OI หนาสุดเป็นค่าเริ่มต้น
+default_exp = best_expiry(ticker, tuple(expiries))
+default_idx = expiries.index(default_exp) if default_exp in expiries else 0
+
 c1, c2 = st.columns(2)
-expiry = c1.selectbox("วันหมดอายุ (expiry)", expiries)
+expiry = c1.selectbox("วันหมดอายุ (expiry) — ค่าเริ่มต้น = งวด OI หนาสุด",
+                      expiries, index=default_idx)
 pct = c2.slider("ช่วง strike รอบราคา (±%)", 5, 50, 20)
 
 calls, puts = get_chain(ticker, expiry)
 
+# --- OI รวมทั้งงวด (ทุก strike) -> ใช้กับ PCR ---
+tot_call = float(calls["openInterest"].sum())
+tot_put = float(puts["openInterest"].sum())
+pcr = tot_put / tot_call if tot_call else 0.0
+
+# --- กรอบ strike รอบราคา -> ใช้กับ walls + กราฟ ---
 lo, hi = spot * (1 - pct / 100), spot * (1 + pct / 100)
 c = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]
 p = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]
-
 if c.empty or p.empty:
     st.warning("ไม่มี strike ในช่วงที่เลือก ลองขยายช่วง ±%")
     st.stop()
 
-call_oi = float(c["openInterest"].sum())
-put_oi = float(p["openInterest"].sum())
-pcr = put_oi / call_oi if call_oi else 0.0
 call_wall = float(c.loc[c["openInterest"].idxmax(), "strike"])
 put_wall = float(p.loc[p["openInterest"].idxmax(), "strike"])
 mp = max_pain(c, p)
 
-# --- เมตริก ---
-m = st.columns(5)
-m[0].metric("Spot", f"{spot:,.2f}")
-m[1].metric("PCR (Put/Call OI)", f"{pcr:.2f}")
-m[2].metric("Call Wall (แนวต้าน)", f"{call_wall:,.0f}")
-m[3].metric("Put Wall (แนวรับ)", f"{put_wall:,.0f}")
-m[4].metric("Max Pain", f"{mp:,.0f}" if mp is not None else "n/a")
+# --- แถวเมตริก 1: OI รวม + PCR (อธิบายว่าทำไม PCR เป็นเท่านี้) ---
+r1 = st.columns(4)
+r1[0].metric("Spot", f"{spot:,.2f}")
+r1[1].metric("Call OI รวม (ทั้งงวด)", f"{tot_call:,.0f}")
+r1[2].metric("Put OI รวม (ทั้งงวด)", f"{tot_put:,.0f}")
+r1[3].metric("PCR (Put/Call)", f"{pcr:.2f}")
+
+# --- แถวเมตริก 2: walls + max pain ---
+r2 = st.columns(3)
+r2[0].metric("Call Wall (แนวต้าน)", f"{call_wall:,.0f}")
+r2[1].metric("Put Wall (แนวรับ)", f"{put_wall:,.0f}")
+r2[2].metric("Max Pain", f"{mp:,.0f}" if mp is not None else "n/a")
 
 st.caption(
     "Call Wall = strike ที่ call OI หนาสุด (มักเป็นแนวต้าน/แม่เหล็ก) • "
