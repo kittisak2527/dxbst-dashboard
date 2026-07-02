@@ -242,6 +242,8 @@ def gold_confluence(ref, key):
             tc, tp = float(c["openInterest"].sum()), float(p["openInterest"].sum())
             gld_pcr = tp / tc if tc else None
             gld_mp = max_pain(c, p)
+            if (tc + tp) < 1000 or (gld_pcr and (gld_pcr > 3 or gld_pcr < 0.2)):
+                gld_mp = None  # ข้อมูล options เพี้ยน -> ไม่ใช้เป็นสัญญาณ confluence
             gdf = yf_daily(OPTIONS_TICKER)
             gld_spot = float(gdf["close"].iloc[-1]) if gdf is not None and len(gdf) else None
     except Exception:
@@ -464,19 +466,34 @@ def render_options():
     r[4].metric("Max Pain", f"{mp:,.0f}" if mp else "n/a")
     st.caption("Call Wall = แนวต้าน • Put Wall = แนวรับ • PCR>1 = put มากกว่า call • คิดในกรอบ ±20% รอบราคา")
 
-    # แปลง wall เป็นสเกลราคาทอง (× ราคาทอง ÷ ราคา GLD)
-    gq = gold_quote(primary, td_key)
-    gold_price = gq["price"] if gq else None
-    if gold_price and spot:
-        mult = gold_price / spot
-        st.markdown(f"**🪙 แปลงเป็นสเกลทอง ({primary}) • ตัวคูณ ×{mult:.2f}**")
-        r2 = st.columns(4)
-        r2[0].metric("ทองอ้างอิง", f"{gold_price:,.2f}")
-        r2[1].metric("Call Wall → ทอง", f"{cw*mult:,.0f}")
-        r2[2].metric("Put Wall → ทอง", f"{pw*mult:,.0f}")
-        r2[3].metric("Max Pain → ทอง", f"{mp*mult:,.0f}" if mp else "n/a")
-        st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ (GLD ไม่ตาม spot เป๊ะ 100%) "
-                   "ใช้เป็นโซนอ้างอิง/วางเส้นบนกราฟทองได้")
+    # ---- ตัวกันข้อมูลเพี้ยน (anomaly guard) ----
+    issues = []
+    if (tot_c + tot_p) < 1000:
+        issues.append("OI รวมน้อยผิดปกติ (งวดบาง)")
+    if pcr > 3 or (0 < pcr < 0.2):
+        issues.append(f"PCR สุดโต่ง ({pcr:.2f})")
+    if mp is not None and cw == pw == mp:
+        issues.append("Call/Put Wall + Max Pain กองที่ strike เดียว")
+    if issues:
+        st.warning("⚠️ ข้อมูล Options งวดนี้อาจเพี้ยน: " + " • ".join(issues)
+                   + " — ลองเปลี่ยน expiry เป็นงวดรายเดือน หรือกดรีเฟรช ก่อนนำค่าไปใช้")
+
+    # ---- แปลง wall เป็นสเกลราคาทอง (ข้ามถ้าข้อมูลเพี้ยน) ----
+    if issues:
+        st.info("⏸️ ข้ามการแปลงสเกลทอง เพราะข้อมูลงวดนี้ผิดปกติ — แก้ให้ค่ากระจายปกติก่อนค่อยนำไปใช้")
+    else:
+        gq = gold_quote(primary, td_key)
+        gold_price = gq["price"] if gq else None
+        if gold_price and spot:
+            mult = gold_price / spot
+            st.markdown(f"**🪙 แปลงเป็นสเกลทอง ({primary}) • ตัวคูณ ×{mult:.2f}**")
+            r2 = st.columns(4)
+            r2[0].metric("ทองอ้างอิง", f"{gold_price:,.2f}")
+            r2[1].metric("Call Wall → ทอง", f"{cw*mult:,.0f}")
+            r2[2].metric("Put Wall → ทอง", f"{pw*mult:,.0f}")
+            r2[3].metric("Max Pain → ทอง", f"{mp*mult:,.0f}" if mp else "n/a")
+            st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ (GLD ไม่ตาม spot เป๊ะ 100%) "
+                       "ใช้เป็นโซนอ้างอิง/วางเส้นบนกราฟทองได้")
 
 
 @st.fragment(run_every=interval)
