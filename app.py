@@ -7,6 +7,7 @@ from datetime import datetime
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import altair as alt
 
 st.set_page_config(page_title="เลขาตลาด • All-in-One", layout="wide")
 
@@ -80,7 +81,7 @@ def _yf_series(symbol, interval, period):
 
 @st.cache_data(ttl=120, show_spinner=False)
 def yf_daily(symbol):
-    return _with_retry(lambda: _yf_series(symbol, "1d", "15d"))
+    return _with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -105,7 +106,7 @@ def _td_series(symbol, interval, size, key):
 
 @st.cache_data(ttl=120, show_spinner=False)
 def td_daily(symbol, key):
-    return _with_retry(lambda: _td_series(symbol, "1day", 15, key))
+    return _with_retry(lambda: _td_series(symbol, "1day", 30, key))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -172,6 +173,10 @@ def get_quote(asset, source, key):
     return {"price": price,
             "change_pct": (price - prev) / prev * 100 if prev else 0.0,
             "closes": closes[-10:]}
+
+
+def get_daily_df(asset, source, key):
+    return td_daily(asset["td"], key) if use_td_for(asset, source) else yf_daily(asset["yf"])
 
 
 def get_pivot_ref(asset, source, key):
@@ -401,6 +406,65 @@ def render_market():
                            f"{q['change_pct']:+.2f}%" if q else "ดึงไม่ได้")
 
 
+def render_heatmaps():
+    st.header("🔥 Heatmap ภาพรวมตลาด")
+    frames, perf = {}, []
+    for a in ASSETS:
+        q = get_quote(a, source, td_key)
+        if q:
+            perf.append({"asset": a["label"], "pct": q["change_pct"]})
+        df = get_daily_df(a, source, td_key)
+        if df is not None and len(df) > 3:
+            s = pd.Series(df["close"].values, index=pd.to_datetime(df["dt"]).dt.date)
+            s = s[~s.index.duplicated(keep="last")]
+            frames[a["label"]] = s
+
+    # ---- Performance grid ----
+    st.subheader("ผลตอบแทนวันนี้ (Performance)")
+    if perf:
+        pdf = pd.DataFrame(perf).reset_index(drop=True)
+        ncols = 5
+        pdf["i"] = range(len(pdf))
+        pdf["col"] = pdf["i"] % ncols
+        pdf["row"] = pdf["i"] // ncols
+        pdf["lab"] = pdf.apply(lambda r: f"{r['asset']}  {r['pct']:+.2f}%", axis=1)
+        mx = max(1.0, float(pdf["pct"].abs().max()))
+        base = alt.Chart(pdf).encode(x=alt.X("col:O", axis=None), y=alt.Y("row:O", axis=None))
+        rect = base.mark_rect(stroke="#0e1117", strokeWidth=3).encode(
+            color=alt.Color("pct:Q", scale=alt.Scale(domain=[-mx, 0, mx],
+                            range=["#c62828", "#37474f", "#2e7d32"]), legend=None))
+        txt = base.mark_text(color="white", fontWeight="bold").encode(text="lab:N")
+        nrows = int(pdf["row"].max()) + 1
+        st.altair_chart((rect + txt).properties(height=70 * nrows), use_container_width=True)
+    else:
+        st.info("ไม่มีข้อมูลผลตอบแทนในรอบนี้")
+
+    # ---- Correlation ----
+    st.subheader("ความสัมพันธ์ระหว่างสินทรัพย์ (Correlation ~1 เดือน)")
+    try:
+        mat = pd.DataFrame(frames).dropna()
+        if len(mat) >= 4 and mat.shape[1] >= 2:
+            corr = mat.pct_change().dropna().corr().round(2)
+            order = list(corr.columns)
+            cl = corr.reset_index().melt(id_vars="index", var_name="a2", value_name="c")
+            cl = cl.rename(columns={"index": "a1"})
+            base = alt.Chart(cl).encode(x=alt.X("a1:O", sort=order, title=None),
+                                        y=alt.Y("a2:O", sort=order, title=None))
+            rect = base.mark_rect().encode(
+                color=alt.Color("c:Q", scale=alt.Scale(domain=[-1, 0, 1],
+                                range=["#c62828", "#eeeeee", "#1565c0"]),
+                                legend=alt.Legend(title="corr")))
+            txt = base.mark_text(fontSize=11).encode(
+                text=alt.Text("c:Q", format=".2f"),
+                color=alt.condition("abs(datum.c) > 0.6", alt.value("white"), alt.value("black")))
+            st.altair_chart((rect + txt).properties(height=400), use_container_width=True)
+            st.caption("น้ำเงิน/บวก = วิ่งทางเดียวกัน • แดง/ลบ = วิ่งสวนกัน • ระยะสั้น ~1 เดือน ใช้ดูคร่าว ๆ")
+        else:
+            st.info("ข้อมูลไม่พอคำนวณ correlation ในรอบนี้")
+    except Exception:
+        st.info("คำนวณ correlation ไม่สำเร็จในรอบนี้")
+
+
 def render_pivots():
     st.header("🎯 แนวรับ/แนวต้าน (Pivot)")
     piv = [a for a in ASSETS if a.get("pivot")]
@@ -480,6 +544,7 @@ def dashboard_body():
                f"อัปเดตล่าสุด {stamp} • ออโต้รีเฟรช: {ref_label}")
     render_gold_module()
     st.divider(); render_market()
+    st.divider(); render_heatmaps()
     st.divider(); render_pivots()
     st.divider(); render_options()
     st.divider()
