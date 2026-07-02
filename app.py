@@ -386,20 +386,6 @@ def render_compare(key):
     st.caption("Basis = ราคา GC (futures) − XAU (spot) • ปกติ futures สูงกว่า spot เล็กน้อย (ค่าดอกเบี้ย/เวลาถึงหมดอายุ) • "
                "ต่างกันหลักสิบจุดเป็นเรื่องปกติ ถ้าแคบ/กว้างผิดปกติค่อยสังเกต")
 
-    # กราฟเทียบเส้น GC vs XAU (~1 เดือน)
-    try:
-        parts = {}
-        if gc is not None:
-            d = gc["df"]; parts["GC"] = pd.Series(d["close"].values, index=pd.to_datetime(d["dt"]).dt.date)
-        if xau is not None:
-            d = xau["df"]; parts["XAU"] = pd.Series(d["close"].values, index=pd.to_datetime(d["dt"]).dt.date)
-        if parts:
-            chart = pd.DataFrame(parts)
-            chart = chart[~chart.index.duplicated(keep="last")].sort_index()
-            st.line_chart(chart)
-    except Exception:
-        pass
-
 
 def render_macro():
     st.header("🌍 ปัจจัยมาโครที่มีผลต่อทอง")
@@ -421,34 +407,31 @@ def render_macro():
 
 
 def render_pivots(key):
-    st.header("🎯 แนวรับ/แนวต้าน (Pivot)")
-    tabs = st.tabs(["GC (Futures)", "XAU (Spot)"])
-    for tab, ref in zip(tabs, ["GC", "XAU"]):
-        with tab:
-            q = gold_quote(ref, key)
-            if not q:
-                st.warning(f"ดึง {ref} ไม่ได้ (XAU ต้องมี TD key)"); continue
-            rh = gold_pivot_ref(ref, key)
-            daily = classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
-            rng = swing_range(q["closes"])
-            bias = daily["PP"] if daily else rng["PP"]
-            badge = "🟢 Bullish" if q["price"] > bias else "🔴 Bearish"
-            st.markdown(f"### {ref} — {badge}")
-            st.caption(f"ราคาล่าสุด {q['price']:,.2f} ({q['change_pct']:+.2f}%)")
-            cA, cB = st.columns(2)
-            with cA:
-                st.markdown("**📍 Pivot รายวัน (Day Trade)**")
-                if daily:
-                    st.table(level_df(daily)); st.caption(rh["how"])
-                else:
-                    st.info("ดึง H/L รายวันไม่ได้ — ใช้กรอบ 10 วันทางขวา")
-            with cB:
-                st.markdown("**🗺️ กรอบ 10 วัน (Swing)**")
-                st.table(level_df(rng)); st.caption("จากกรอบราคาปิด 10 วัน")
+    st.header(f"🎯 แนวรับ/แนวต้าน (Pivot) — {primary}")
+    q = gold_quote(primary, key)
+    if not q:
+        st.warning(f"ดึง {primary} ไม่ได้ (XAU ต้องมี TD key)"); return
+    rh = gold_pivot_ref(primary, key)
+    daily = classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
+    rng = swing_range(q["closes"])
+    bias = daily["PP"] if daily else rng["PP"]
+    badge = "🟢 Bullish" if q["price"] > bias else "🔴 Bearish"
+    st.markdown(f"### {primary} — {badge}")
+    st.caption(f"ราคาล่าสุด {q['price']:,.2f} ({q['change_pct']:+.2f}%)")
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("**📍 Pivot รายวัน (Day Trade)**")
+        if daily:
+            st.table(level_df(daily)); st.caption(rh["how"])
+        else:
+            st.info("ดึง H/L รายวันไม่ได้ — ใช้กรอบ 10 วันทางขวา")
+    with cB:
+        st.markdown("**🗺️ กรอบ 10 วัน (Swing)**")
+        st.table(level_df(rng)); st.caption("จากกรอบราคาปิด 10 วัน")
 
 
 def render_options():
-    st.header("🧊 Options OI — GLD (Yahoo)")
+    st.header("🧊 Options OI — GLD (สรุป)")
     try:
         exps = opt_expiries(OPTIONS_TICKER)
         gdf = yf_daily(OPTIONS_TICKER)
@@ -458,20 +441,18 @@ def render_options():
     if not exps or spot is None:
         st.warning("ดึง option chain ไม่ได้ (อาจติด rate limit) — ลองรีเฟรช"); return
     default_idx = exps.index(pick_monthly(exps)) if pick_monthly(exps) in exps else 0
-    e1, e2 = st.columns(2)
-    expiry = e1.selectbox("วันหมดอายุ", exps, index=default_idx, key="opt_exp")
-    pct = e2.slider("ช่วง strike ±%", 5, 50, 20, key="opt_pct")
+    expiry = st.selectbox("วันหมดอายุ", exps, index=default_idx, key="opt_exp")
     try:
         calls, puts = opt_chain(OPTIONS_TICKER, expiry)
     except Exception:
         st.warning("ดึง chain งวดนี้ไม่สำเร็จ — ลองรีเฟรช"); return
     tot_c, tot_p = float(calls["openInterest"].sum()), float(puts["openInterest"].sum())
     pcr = tot_p / tot_c if tot_c else 0.0
-    lo, hi = spot * (1 - pct / 100), spot * (1 + pct / 100)
+    lo, hi = spot * 0.8, spot * 1.2
     c = calls[(calls.strike >= lo) & (calls.strike <= hi)]
     p = puts[(puts.strike >= lo) & (puts.strike <= hi)]
     if c.empty or p.empty:
-        st.info("ไม่มี strike ในช่วงนี้ ลองขยาย ±%"); return
+        st.info("ไม่มี strike ในช่วงนี้"); return
     cw = float(c.loc[c.openInterest.idxmax(), "strike"])
     pw = float(p.loc[p.openInterest.idxmax(), "strike"])
     mp = max_pain(c, p)
@@ -481,11 +462,7 @@ def render_options():
     r[2].metric("Call Wall", f"{cw:,.0f}")
     r[3].metric("Put Wall", f"{pw:,.0f}")
     r[4].metric("Max Pain", f"{mp:,.0f}" if mp else "n/a")
-    strikes = sorted(set(c.strike) | set(p.strike))
-    co = dict(zip(c.strike, c.openInterest)); po = dict(zip(p.strike, p.openInterest))
-    st.bar_chart(pd.DataFrame({"Call OI": [co.get(s, 0) for s in strikes],
-                               "Put OI": [po.get(s, 0) for s in strikes]},
-                              index=[f"{s:g}" for s in strikes]))
+    st.caption("Call Wall = แนวต้าน • Put Wall = แนวรับ • PCR>1 = put มากกว่า call • คิดในกรอบ ±20% รอบราคา")
 
 
 @st.fragment(run_every=interval)
