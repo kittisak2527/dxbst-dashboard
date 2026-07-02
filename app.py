@@ -464,6 +464,20 @@ def render_options():
     r[4].metric("Max Pain", f"{mp:,.0f}" if mp else "n/a")
     st.caption("Call Wall = แนวต้าน • Put Wall = แนวรับ • PCR>1 = put มากกว่า call • คิดในกรอบ ±20% รอบราคา")
 
+    # แปลง wall เป็นสเกลราคาทอง (× ราคาทอง ÷ ราคา GLD)
+    gq = gold_quote(primary, td_key)
+    gold_price = gq["price"] if gq else None
+    if gold_price and spot:
+        mult = gold_price / spot
+        st.markdown(f"**🪙 แปลงเป็นสเกลทอง ({primary}) • ตัวคูณ ×{mult:.2f}**")
+        r2 = st.columns(4)
+        r2[0].metric("ทองอ้างอิง", f"{gold_price:,.2f}")
+        r2[1].metric("Call Wall → ทอง", f"{cw*mult:,.0f}")
+        r2[2].metric("Put Wall → ทอง", f"{pw*mult:,.0f}")
+        r2[3].metric("Max Pain → ทอง", f"{mp*mult:,.0f}" if mp else "n/a")
+        st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ (GLD ไม่ตาม spot เป๊ะ 100%) "
+                   "ใช้เป็นโซนอ้างอิง/วางเส้นบนกราฟทองได้")
+
 
 @st.fragment(run_every=interval)
 def body():
