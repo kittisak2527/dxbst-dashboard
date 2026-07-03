@@ -367,6 +367,86 @@ def render_confluence():
     st.caption("⚠️ สรุปเชิงกลไกเพื่อการศึกษา ไม่ใช่สัญญาณซื้อขาย/คำแนะนำ — บริหารความเสี่ยงเสมอ")
 
 
+def render_zone_radar():
+    st.header("📍 เรดาร์โซน — ราคาทองอยู่ใกล้แนวไหน")
+    q = gold_quote(primary, td_key)
+    if not q:
+        st.info("ยังดึงราคาทองไม่ได้ในรอบนี้"); return
+    price = q["price"]
+    levels = []
+    rh = gold_pivot_ref(primary, td_key)
+    if rh:
+        dp = classic_pivot(rh["high"], rh["low"], rh["close"])
+        nm = {"R3": "Pivot R3", "R2": "Pivot R2", "R1": "Pivot R1", "PP": "Pivot กลาง",
+              "S1": "Pivot S1", "S2": "Pivot S2", "S3": "Pivot S3"}
+        for k, v in dp.items():
+            levels.append((nm[k], v))
+    try:
+        exps = opt_expiries(OPTIONS_TICKER); me = pick_monthly(exps)
+        gdf = yf_daily(OPTIONS_TICKER)
+        gld_spot = float(gdf["close"].iloc[-1]) if gdf is not None and len(gdf) else None
+        if me and gld_spot:
+            c, p = opt_chain(OPTIONS_TICKER, me)
+            tc, tp = float(c["openInterest"].sum()), float(p["openInterest"].sum())
+            pcr = tp / tc if tc else 0.0
+            lo, hi = gld_spot * 0.8, gld_spot * 1.2
+            cc = c[(c.strike >= lo) & (c.strike <= hi)]
+            pp = p[(p.strike >= lo) & (p.strike <= hi)]
+            if not cc.empty and not pp.empty:
+                cw = float(cc.loc[cc.openInterest.idxmax(), "strike"])
+                pw = float(pp.loc[pp.openInterest.idxmax(), "strike"])
+                mp = max_pain(cc, pp)
+                anom = (tc + tp) < 1000 or pcr > 3 or (0 < pcr < 0.2) or (mp is not None and cw == pw == mp)
+                if not anom:
+                    mult = price / gld_spot
+                    levels += [("Call Wall", cw * mult), ("Put Wall", pw * mult)]
+                    if mp:
+                        levels.append(("Max Pain", mp * mult))
+    except Exception:
+        pass
+
+    above = sorted([(n, v) for n, v in levels if v > price], key=lambda x: x[1])
+    below = sorted([(n, v) for n, v in levels if v < price], key=lambda x: -x[1])
+    c1, c2, c3 = st.columns(3)
+    c1.metric(f"ราคาทอง ({primary})", f"{price:,.2f}")
+    if above:
+        n, v = above[0]; c2.metric("แนวต้านใกล้สุด ↑", f"{v:,.2f}", f"{(v-price)/price*100:+.2f}% • {n}")
+    else:
+        c2.metric("แนวต้านใกล้สุด ↑", "-")
+    if below:
+        n, v = below[0]; c3.metric("แนวรับใกล้สุด ↓", f"{v:,.2f}", f"{(v-price)/price*100:+.2f}% • {n}")
+    else:
+        c3.metric("แนวรับใกล้สุด ↓", "-")
+
+    fired = False
+    if above and abs(above[0][1] - price) / price < 0.003:
+        n, v = above[0]; fired = True
+        st.warning(f"⚡ ราคากำลังทดสอบ {n} ({v:,.2f}) — เฝ้าดูปฏิกิริยา: เด้งลง = โดนต้าน, "
+                   "ทะลุด้วยเนื้อแท่ง+ยืนได้ = สัญญาณแรง (อย่าเพิ่งสวนก่อนยืนยัน)")
+    if below and abs(below[0][1] - price) / price < 0.003:
+        n, v = below[0]; fired = True
+        st.warning(f"⚡ ราคากำลังทดสอบ {n} ({v:,.2f}) — เฝ้าดูการเด้ง: อย่ารับมีดตก, "
+                   "หลุดด้วยเนื้อแท่ง = อ่อนแรงอาจลงต่อ (รอสัญญาณยืนยันก่อนเข้า)")
+    if not fired:
+        parts = []
+        if above:
+            parts.append(f"ต้านถัดไป {above[0][0]} +{(above[0][1]-price)/price*100:.2f}%")
+        if below:
+            parts.append(f"รับถัดไป {below[0][0]} {(below[0][1]-price)/price*100:.2f}%")
+        st.info("📝 ราคายังอยู่กลางโซน • " + " | ".join(parts) + " — ยังไม่ถึงจุดตัดสินใจ")
+
+    walls = [(n, v) for n, v in levels if n in ("Call Wall", "Put Wall", "Max Pain")]
+    pivs = [(n, v) for n, v in levels if n.startswith("Pivot")]
+    quality = []
+    for wn, wv in walls:
+        for pn, pv in pivs:
+            if abs(wv - pv) / price < 0.003:
+                quality.append(f"{wn} ≈ {pn} (~{(wv+pv)/2:,.0f})")
+    if quality:
+        st.success("⭐ โซนคุณภาพ (options ทับ pivot): " + " • ".join(quality))
+    st.caption("แตะโซนให้ 'รอสัญญาณยืนยัน' ไม่เดาล่วงหน้า • เป็นการเพิ่มความน่าจะเป็น ไม่ใช่การทำนาย • วาง SL ทุกไม้")
+
+
 def render_compare(key):
     st.header("⚖️ GC (Futures) vs XAU (Spot) + Basis")
     gc = gold_quote("GC", key)
@@ -501,6 +581,7 @@ def body():
     st.title("เลขาตลาด • ทองคำ (Gold Focus)")
     st.caption(f"อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')} • ออโต้รีเฟรช: {ref_choice}")
     render_confluence()
+    st.divider(); render_zone_radar()
     st.divider(); render_compare(td_key)
     st.divider(); render_macro()
     st.divider(); render_pivots(td_key)
