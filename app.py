@@ -50,7 +50,7 @@ def resolve_td_key(sidebar_val):
     if sidebar_val:
         return sidebar_val
     try:
-        return st.secrets["01002762cb59417b8b7f87311fa405da"]
+        return st.secrets["TWELVEDATA_KEY"]
     except Exception:
         return ""
 
