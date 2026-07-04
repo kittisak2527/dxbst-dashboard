@@ -8,7 +8,12 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.set_page_config(page_title="เลขาตลาด • ทองคำ", layout="wide")
+st.set_page_config(page_title="เลขาตลาด • ทองคำ", layout="wide",
+                   initial_sidebar_state="collapsed")
+
+# ====== โหมดแชร์ (view-only ถาวร) — แก้ค่าพวกนี้ในโค้ดก่อน deploy ======
+PRIMARY = "GC"          # อ้างอิงราคาทอง: "GC" (Yahoo futures) หรือ "XAU" (Twelve Data spot; ต้องตั้ง Secrets)
+REFRESH_SECONDS = 1800  # ออโต้รีเฟรชทุก 30 นาที
 
 # ============================================================
 #  CONFIG
@@ -63,12 +68,12 @@ def _yf_series(symbol, interval, period):
                          "close": df["Close"].astype(float).values})
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def yf_daily(symbol):
     return _with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def yf_hourly(symbol):
     return _with_retry(lambda: _yf_series(symbol, "60m", "7d"))
 
@@ -88,7 +93,7 @@ def _td_series(symbol, interval, size, key):
                          "close": [float(v["close"]) for v in vals]})
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def td_daily(symbol, key):
     return _with_retry(lambda: _td_series(symbol, "1day", 30, key))
 
@@ -112,12 +117,12 @@ def fred_latest(series_id):
         return None
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def opt_expiries(ticker):
     return _with_retry(lambda: list(yf.Ticker(ticker).options))
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def opt_chain(ticker, expiry):
     def _f():
         oc = yf.Ticker(ticker).option_chain(expiry)
@@ -303,7 +308,7 @@ def gold_confluence(ref, key):
     return {"net": net, "bull": bull, "bear": bear, "bias": bias, "grade": grade, "sig": sig}
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _dxy_df():
     return yf_daily(DXY_YF)
 
@@ -317,25 +322,21 @@ def gold_quote_dxy():
 
 
 # ============================================================
-#  SIDEBAR
+#  CONFIG (view-only — ไม่มีปุ่มให้ผู้ชมแตะ)
 # ============================================================
-with st.sidebar:
-    st.header("⚙️ ตั้งค่า")
-    key_input = st.text_input("Twelve Data API key (สำหรับ XAU spot)", type="password", value="")
-    td_key = resolve_td_key(key_input)
-    ref_label = st.radio("โมดูลสรุป/พีวอต อ้างอิงจาก", ["GC (Futures)", "XAU (Spot)"], index=0)
-    primary = "XAU" if ref_label.startswith("XAU") else "GC"
-    if primary == "XAU" and not td_key:
-        st.warning("ยังไม่มี TD key — สรุปอ้างอิง GC ชั่วคราว"); primary = "GC"
+td_key = resolve_td_key("")          # ดึงจาก Streamlit Secrets เท่านั้น
+primary = PRIMARY
+if primary == "XAU" and not td_key:
+    primary = "GC"
+interval = REFRESH_SECONDS
 
-    ref_choice = st.selectbox("ออโต้รีเฟรช",
-                              ["ปิด (แมนนวล)", "ทุก 15 นาที", "ทุก 30 นาที (แนะนำ)", "ทุก 60 นาที"],
-                              index=2)
-    interval = {"ปิด (แมนนวล)": None, "ทุก 15 นาที": 900,
-                "ทุก 30 นาที (แนะนำ)": 1800, "ทุก 60 นาที": 3600}[ref_choice]
-    if st.button("🔄 รีเฟรชทันที", use_container_width=True):
-        st.cache_data.clear(); st.rerun()
-    st.caption("GC = Yahoo (futures) • XAU = Twelve Data (spot) • DXY = Yahoo • yield/TIPS = FRED • options = Yahoo")
+# ซ่อนเมนู/ฟุตเตอร์/แถบข้างของ Streamlit ให้ผู้ชมเห็นหน้าสะอาด
+st.markdown("""<style>
+#MainMenu {visibility:hidden;}
+footer {visibility:hidden;}
+[data-testid="stSidebar"] {display:none;}
+[data-testid="stToolbar"] {display:none;}
+</style>""", unsafe_allow_html=True)
 
 
 # ============================================================
@@ -522,8 +523,8 @@ def render_options():
         exps, spot = [], None
     if not exps or spot is None:
         st.warning("ดึง option chain ไม่ได้ (อาจติด rate limit) — ลองรีเฟรช"); return
-    default_idx = exps.index(pick_monthly(exps)) if pick_monthly(exps) in exps else 0
-    expiry = st.selectbox("วันหมดอายุ", exps, index=default_idx, key="opt_exp")
+    expiry = pick_monthly(exps)
+    st.caption(f"งวด (รายเดือน): {expiry}")
     try:
         calls, puts = opt_chain(OPTIONS_TICKER, expiry)
     except Exception:
@@ -579,7 +580,8 @@ def render_options():
 @st.fragment(run_every=interval)
 def body():
     st.title("เลขาตลาด • ทองคำ (Gold Focus)")
-    st.caption(f"อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')} • ออโต้รีเฟรช: {ref_choice}")
+    st.caption(f"อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')} • โหมดดูอย่างเดียว • "
+               f"รีเฟรชอัตโนมัติทุก 30 นาที • อ้างอิง {primary}")
     render_confluence()
     st.divider(); render_zone_radar()
     st.divider(); render_compare(td_key)
