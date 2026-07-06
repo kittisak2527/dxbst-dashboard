@@ -330,12 +330,32 @@ if primary == "XAU" and not td_key:
     primary = "GC"
 interval = REFRESH_SECONDS
 
-# ซ่อนเมนู/ฟุตเตอร์/แถบข้างของ Streamlit ให้ผู้ชมเห็นหน้าสะอาด
+# ธีมน้ำเงิน-ทอง (หรูหรา) + ซ่อนเมนู/แถบข้าง — CSS ล้วน ไม่กระทบการประมวลผล
 st.markdown("""<style>
-#MainMenu {visibility:hidden;}
-footer {visibility:hidden;}
-[data-testid="stSidebar"] {display:none;}
-[data-testid="stToolbar"] {display:none;}
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+:root{--gold:#e8c565;--gold2:#c9a13b;--card:#16203a;--line:#243350;--txt:#e8ecf3;--muted:#9fb0c8;}
+html,body,[class*="css"],.stApp,[data-testid="stAppViewContainer"]{font-family:'IBM Plex Sans Thai',sans-serif!important;}
+.stApp,[data-testid="stAppViewContainer"]{
+  background:radial-gradient(1100px 550px at 18% -12%, #16223f 0%, #0b1220 58%)!important;color:var(--txt);}
+[data-testid="stHeader"]{background:transparent;}
+#MainMenu,footer,[data-testid="stToolbar"],[data-testid="stSidebar"]{visibility:hidden;display:none;}
+h1{color:var(--gold)!important;font-weight:700!important;letter-spacing:.3px;}
+h2,h3{color:var(--txt)!important;font-weight:600!important;}
+h2{border-left:4px solid var(--gold);padding-left:12px;margin-top:.2rem;}
+[data-testid="stMetric"]{
+  background:linear-gradient(180deg,#18233f 0%,#131c30 100%);border:1px solid var(--line);
+  border-radius:14px;padding:14px 16px;box-shadow:0 4px 18px rgba(0,0,0,.35);}
+[data-testid="stMetric"]:hover{border-color:var(--gold2);}
+[data-testid="stMetricLabel"] p{color:var(--muted)!important;font-size:.8rem!important;}
+[data-testid="stMetricValue"]{color:var(--txt)!important;font-weight:700!important;}
+[data-testid="stTable"] table{border-collapse:separate;border-spacing:0;border-radius:12px;overflow:hidden;}
+[data-testid="stTable"] thead th{background:#1a2542!important;color:var(--gold)!important;font-weight:600;}
+[data-testid="stTable"] tbody tr:nth-child(even){background:rgba(255,255,255,.02);}
+[data-testid="stTable"] td,[data-testid="stTable"] th{border-color:var(--line)!important;color:var(--txt);}
+[data-testid="stAlert"]{border-radius:12px;border:1px solid var(--line);}
+[data-testid="stCaptionContainer"],small{color:var(--muted)!important;}
+hr{border-color:var(--line)!important;}
+[data-baseweb="select"]>div{background:#131c30!important;border-color:var(--line)!important;}
 </style>""", unsafe_allow_html=True)
 
 
@@ -347,12 +367,30 @@ def render_confluence():
     g = gold_confluence(primary, td_key)
     if not g:
         st.warning("ยังประเมินทองไม่ได้ในรอบนี้"); return
-    biasmap = {"Bullish": "🟢 Bullish", "Bearish": "🔴 Bearish", "Neutral": "⚪ Neutral"}
-    risklabel = {1: "ต่ำมาก", 2: "ต่ำ", 3: "ปานกลาง", 4: "สูง", 5: "สูงมาก"}
-    cols = st.columns(3)
-    cols[0].metric(f"ทิศทาง (อ้างอิง {primary})", biasmap[g["bias"]], f"คะแนนรวม {g['net']:+d}")
-    cols[1].metric("ความเสี่ยง (เกรด)", f"{g['grade']}/5", risklabel[g["grade"]])
-    cols[2].metric("สัญญาณ หนุน / กด", f"{g['bull']} ↑ / {g['bear']} ↓")
+    bmap = {"Bullish": ("🟢", "#38c172"), "Bearish": ("🔴", "#e3506a"), "Neutral": ("⚪", "#9fb0c8")}
+    bi, bc = bmap[g["bias"]]
+    gcolor = "#38c172" if g["grade"] <= 2 else "#e8c565" if g["grade"] == 3 else "#e3506a"
+    glabel = {1: "ต่ำมาก", 2: "ต่ำ", 3: "ปานกลาง", 4: "สูง", 5: "สูงมาก"}[g["grade"]]
+    card = ("background:linear-gradient(180deg,#18233f,#131c30);border:1px solid #243350;"
+            "border-radius:14px;padding:16px 18px;flex:1;min-width:150px;"
+            "box-shadow:0 4px 18px rgba(0,0,0,.35);")
+    lbl = "color:#9fb0c8;font-size:.8rem;"
+    big = "font-size:1.7rem;font-weight:700;line-height:1.35;"
+    st.markdown(
+        f'<div style="display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 16px;">'
+        f'<div style="{card}border-left:4px solid {bc};">'
+        f'<div style="{lbl}">ทิศทาง (อ้างอิง {primary})</div>'
+        f'<div style="color:{bc};{big}">{bi} {g["bias"]}</div>'
+        f'<div style="{lbl}">คะแนนรวม {g["net"]:+d}</div></div>'
+        f'<div style="{card}border-left:4px solid {gcolor};">'
+        f'<div style="{lbl}">ความเสี่ยง (เกรด)</div>'
+        f'<div style="color:{gcolor};{big}">{g["grade"]}/5</div>'
+        f'<div style="{lbl}">{glabel}</div></div>'
+        f'<div style="{card}border-left:4px solid #e8c565;">'
+        f'<div style="{lbl}">สัญญาณ หนุน / กด</div>'
+        f'<div style="color:#e8ecf3;{big}">{g["bull"]} ↑ / {g["bear"]} ↓</div>'
+        f'<div style="{lbl}">จาก 6 สัญญาณ</div></div>'
+        f'</div>', unsafe_allow_html=True)
     st.table(pd.DataFrame({
         "สัญญาณ": [s["name"] for s in g["sig"]],
         "อ่านได้": [("🟢 หนุน" if s["v"] > 0 else "🔴 กด" if s["v"] < 0 else "⚪ กลาง") for s in g["sig"]],
