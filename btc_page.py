@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
+import altair as alt
 
 import common as C
 
@@ -93,6 +94,66 @@ def deribit_options():
     anom = (d["totC"] + d["totP"]) < 50 or pcr > 3 or (0 < pcr < 0.2) or (mp is not None and cw == pw == mp)
     return {"expiry": exp, "spot": spot, "pcr": pcr, "callWall": cw,
             "putWall": pw, "maxPain": mp, "anomalous": anom}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def deribit_gex(pct=0.20):
+    """คำนวณ GEX ราย strike จาก Deribit (ใช้ mark_iv + Black-Scholes)"""
+    try:
+        j = C.http_json(DERIBIT + "get_book_summary_by_currency?currency=BTC&kind=option")
+        rows = j.get("result", [])
+    except Exception:
+        return None
+    if not rows:
+        return None
+    parsed, exp_oi = [], {}
+    for it in rows:
+        parts = it.get("instrument_name", "").split("-")
+        if len(parts) != 4:
+            continue
+        _, exp, strike, cp = parts
+        try:
+            strike = float(strike)
+        except Exception:
+            continue
+        oi = float(it.get("open_interest") or 0)
+        parsed.append({"exp": exp, "K": strike, "cp": cp, "oi": oi,
+                       "iv": it.get("mark_iv"), "S": it.get("underlying_price")})
+        exp_oi[exp] = exp_oi.get(exp, 0.0) + oi
+    if not exp_oi:
+        return None
+    exp = max(exp_oi, key=lambda e: exp_oi[e])
+    spot = deribit_index()
+    if not spot:
+        for p in parsed:
+            if p["exp"] == exp and p["S"]:
+                spot = float(p["S"]); break
+    if not spot:
+        return None
+    try:
+        expd = datetime.strptime(exp, "%d%b%y")
+    except Exception:
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    T = max((expd - now).total_seconds() + 8 * 3600, 3600) / (365 * 24 * 3600)
+    lo, hi = spot * (1 - pct), spot * (1 + pct)
+    per = {}
+    for p in parsed:
+        if p["exp"] != exp or p["K"] < lo or p["K"] > hi or p["iv"] is None:
+            continue
+        g = C.bs_gamma(spot, p["K"], T, float(p["iv"]) / 100.0)
+        gex = g * p["oi"] * (spot ** 2) * 0.01     # multiplier=1 (1 สัญญา=1 BTC)
+        d = per.setdefault(p["K"], {"call": 0.0, "put": 0.0})
+        d["call" if p["cp"] == "C" else "put"] += gex
+    if not per:
+        return None
+    strikes = sorted(per)
+    net = {k: per[k]["call"] - per[k]["put"] for k in strikes}   # call บวก / put ลบ
+    total = sum(net.values())
+    call_wall = max(strikes, key=lambda k: per[k]["call"])
+    put_wall = max(strikes, key=lambda k: per[k]["put"])
+    return {"expiry": exp, "spot": spot, "strikes": strikes, "net": net,
+            "total": total, "call_wall": call_wall, "put_wall": put_wall}
 
 
 def nasdaq_change():
@@ -294,6 +355,39 @@ def render_options():
         st.warning("⚠️ ข้อมูล options งวดนี้อาจเพี้ยน — ใช้เฉพาะ pivot (ลองรีเฟรช)")
 
 
+def render_gex():
+    st.header("🧮 GEX by Strike — Deribit BTC (คำนวณเอง)")
+    gx = deribit_gex(0.20)
+    if not gx:
+        st.warning("ดึง/คำนวณ GEX ไม่ได้ในรอบนี้ (Deribit อาจไม่พร้อม) — ลองรีเฟรช"); return
+    total_m = gx["total"] / 1e6
+    pos = gx["total"] >= 0
+    rcolor = "#38c172" if pos else "#e3506a"
+    C.hero_cards([
+        ("Regime (Net GEX รวม)", ("🟢 Positive" if pos else "🔴 Negative"),
+         f"{total_m:+,.1f}M • {'หน่วง' if pos else 'เร่ง'}", rcolor),
+        ("Call GEX Wall", f"{gx['call_wall']:,.0f}", "แนวต้านเชิงโครงสร้าง", "#e8c565"),
+        ("Put GEX Wall", f"{gx['put_wall']:,.0f}", "แนวรับเชิงโครงสร้าง", "#e8c565"),
+    ])
+    df = C.pd.DataFrame({
+        "strike": [str(int(k)) for k in gx["strikes"]],
+        "GEX": [gx["net"][k] / 1e6 for k in gx["strikes"]],
+    })
+    df["ฝั่ง"] = ["Call (บวก)" if v >= 0 else "Put (ลบ)" for v in df["GEX"]]
+    chart = alt.Chart(df).mark_bar().encode(
+        x=alt.X("strike:N", title="Strike", sort=list(df["strike"])),
+        y=alt.Y("GEX:Q", title="Net GEX (ล้าน USD ต่อ 1%)"),
+        color=alt.Color("ฝั่ง:N", scale=alt.Scale(domain=["Call (บวก)", "Put (ลบ)"],
+                        range=["#38c172", "#e3506a"]), legend=alt.Legend(title=None)),
+        tooltip=["strike", alt.Tooltip("GEX:Q", format="+.2f")],
+    ).properties(height=320)
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(f"งวด {gx['expiry']} • spot {gx['spot']:,.0f} • กรอบ ±20% • "
+               "GEX = gamma×OI×spot²×0.01 (Call บวก / Put ลบ) • gamma คำนวณจาก mark_iv ของ Deribit (Black-Scholes)")
+    st.info("📝 Positive GEX รวม = ดีลเลอร์มักหน่วงราคา (ตลาดนิ่ง/เข้ากรอบ) • Negative = เร่งราคา (ผันผวน/cascade) • "
+            "อิงสมมติฐาน 'dealer short call / long put' ซึ่งไม่จริงเสมอไป — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
+
+
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
     st.title("เลขาตลาด • BTCUSD")
@@ -303,6 +397,7 @@ def body():
     st.divider(); render_zone_radar()
     st.divider(); render_pivots()
     st.divider(); render_options()
+    st.divider(); render_gex()
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
