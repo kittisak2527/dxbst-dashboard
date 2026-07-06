@@ -5,6 +5,6 @@ st.set_page_config(page_title="เลขาตลาด • ทอง / BTC", la
 
 pages = [
     st.Page("gold_page.py", title="ทองคำ", icon="🥇", default=True),
-    st.Page("btc_page.py", title="BTCUSD", icon="₿"),
+    st.Page("btc_page.py", title="BTCUSD", icon="💰"),
 ]
 st.navigation(pages).run()
