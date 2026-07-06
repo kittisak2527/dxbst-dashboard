@@ -1,6 +1,7 @@
 """ฟังก์ชัน/ธีมที่ใช้ร่วมกันระหว่างหน้า ทองคำ และ BTCUSD"""
 import io
 import json
+import math
 import urllib.parse
 import urllib.request
 
@@ -126,6 +127,15 @@ def swing_range(closes):
 def level_df(levels, dec=2):
     return pd.DataFrame({"ระดับ": LEVEL_NAMES,
                          "ราคา": [f"{levels[k]:,.{dec}f}" for k in LEVEL_ORDER]})
+
+
+def bs_gamma(S, K, T, sigma, r=0.0):
+    """Black-Scholes gamma (เท่ากันทั้ง call/put) สำหรับคำนวณ GEX"""
+    if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+        return 0.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+    pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2 * math.pi)
+    return pdf / (S * sigma * math.sqrt(T))
 
 
 def max_pain(calls, puts):
