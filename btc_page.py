@@ -388,6 +388,41 @@ def render_gex():
             "อิงสมมติฐาน 'dealer short call / long put' ซึ่งไม่จริงเสมอไป — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
 
 
+def render_pinescript():
+    st.header("📋 PineScript — เส้นบนกราฟ TradingView (ข้อมูลจริง)")
+    opt = deribit_options()
+    gx = deribit_gex(0.20)
+    if not opt and not gx:
+        st.info("ยังไม่มีข้อมูล options ในรอบนี้ — ลองรีเฟรช"); return
+    base = opt or gx
+    exp, spot = base["expiry"], base["spot"]
+    stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
+    hl = []
+    if opt:
+        hl.append((opt["callWall"], "Call Wall (OI)", "color.red", "hline.style_dashed", 2))
+        hl.append((opt["putWall"], "Put Wall (OI)", "color.green", "hline.style_dashed", 2))
+        if opt["maxPain"]:
+            hl.append((opt["maxPain"], "Max Pain", "color.yellow", "hline.style_dotted", 2))
+    if gx:
+        hl.append((gx["call_wall"], "GEX Call Wall", "color.orange", "hline.style_solid", 1))
+        hl.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
+    lines = ["//@version=5",
+             'indicator("BTC Deribit Levels [Dashboard]", overlay=true)',
+             f"// งวด {exp} • spot {spot:,.0f} • ข้อมูลจริงจาก Deribit • สร้าง {stamp}", ""]
+    for v, t, c, s, w in hl:
+        lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
+    lines.append("")
+    lines.append("if barstate.islast")
+    for v, t, c, s, w in hl:
+        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}", '
+                     f'style=label.style_label_left, color=color.new({c}, 70), '
+                     f'textcolor=color.white, size=size.small)')
+    st.code("\n".join(lines), language="pine")
+    st.caption("ก๊อปโค้ดนี้ → TradingView → Pine Editor → วาง → Add to chart • "
+               "ค่าจะนิ่งตามตอนที่ก๊อป (snapshot) ถ้าราคาขยับมากให้กลับมาก๊อปใหม่ (แดชบอร์ดอัปเดตทุก 30 นาที) • "
+               "เส้น: Wall/Max Pain จาก OI จริง + GEX Wall จาก gamma จริง")
+
+
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
     st.title("เลขาตลาด • BTCUSD")
@@ -398,6 +433,7 @@ def body():
     st.divider(); render_pivots()
     st.divider(); render_options()
     st.divider(); render_gex()
+    st.divider(); render_pinescript()
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
