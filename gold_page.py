@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 import yfinance as yf
@@ -320,18 +320,30 @@ def render_pivots():
         st.table(C.level_df(rng)); st.caption("จากกรอบราคาปิด 10 วัน")
 
 
+def _dte_gold(exp):
+    try:
+        d = datetime.strptime(exp, "%Y-%m-%d")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return max(0, (d - now).days)
+    except Exception:
+        return None
+
+
 def render_options():
     st.header("🧊 Options OI — GLD (สรุป)")
     opt = gld_snapshot()
     if not opt:
         st.warning("ดึง option chain ไม่ได้ (อาจติด rate limit) — ลองรีเฟรช"); return
-    st.caption(f"งวด (รายเดือน): {opt['expiry']}")
+    dte = _dte_gold(opt["expiry"])
+    dte_txt = f" • เหลือ {dte} วันถึงหมดอายุ" if dte is not None else ""
+    st.caption(f"งวด (รายเดือน): {opt['expiry']}{dte_txt}")
     r = st.columns(5)
     r[0].metric("Spot GLD", f"{opt['spot']:,.2f}")
     r[1].metric("PCR", f"{opt['pcr']:.2f}")
     r[2].metric("Call Wall", f"{opt['callWall']:,.0f}")
     r[3].metric("Put Wall", f"{opt['putWall']:,.0f}")
-    r[4].metric("Max Pain", f"{opt['maxPain']:,.0f}" if opt["maxPain"] else "n/a")
+    r[4].metric("Max Pain", f"{opt['maxPain']:,.0f}" if opt["maxPain"] else "n/a",
+                f"เหลือ {dte} วัน" if dte is not None else None, delta_color="off")
     st.caption("Call Wall = แนวต้าน • Put Wall = แนวรับ • PCR>1 = put มากกว่า call • กรอบ ±20%")
     if opt["anomalous"]:
         st.warning("⚠️ ข้อมูล Options งวดนี้อาจเพี้ยน — ข้ามการแปลงสเกลทอง (ลองรีเฟรช)")
@@ -348,6 +360,40 @@ def render_options():
         st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ ใช้เป็นโซนอ้างอิง")
 
 
+def render_pinescript():
+    st.header("📋 PineScript — เส้นบนกราฟทอง (ข้อมูลจริง)")
+    opt = gld_snapshot()
+    q = gold_quote(primary)
+    if not opt or not q:
+        st.info("ยังไม่มีข้อมูล options ในรอบนี้ — ลองรีเฟรช"); return
+    if opt["anomalous"]:
+        st.warning("⚠️ ข้อมูล Options งวดนี้เพี้ยน — ยังเจนเส้นไม่ได้ (รอค่ากระจายปกติแล้วลองใหม่)"); return
+    mult = q["price"] / opt["spot"]
+    dte = _dte_gold(opt["expiry"])
+    stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
+    hl = [(opt["callWall"] * mult, "Call Wall", "color.red", "hline.style_dashed", 2),
+          (opt["putWall"] * mult, "Put Wall", "color.green", "hline.style_dashed", 2)]
+    if opt["maxPain"]:
+        hl.append((opt["maxPain"] * mult, "Max Pain", "color.yellow", "hline.style_dotted", 2))
+    lines = ["//@version=5",
+             f'indicator("Gold Options Levels [{primary}]", overlay=true)',
+             f"// GLD options (Yahoo) แปลงเป็นสเกลทอง ×{mult:.2f} • งวด {opt['expiry']} • "
+             f"proxy โดยประมาณ • สร้าง {stamp}", ""]
+    for v, t, c, s, w in hl:
+        lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
+    lines.append("")
+    lines.append("if barstate.islast")
+    for v, t, c, s, w in hl:
+        extra = f" | {opt['expiry']} ({dte}d)" if t == "Max Pain" and dte is not None else ""
+        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
+                     f'style=label.style_label_left, color=color.new({c}, 70), '
+                     f'textcolor=color.white, size=size.small)')
+    st.code("\n".join(lines), language="pine")
+    st.caption(f"ค่าแปลงเป็นสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} ได้เลย • "
+               "เป็นค่าประมาณจาก GLD proxy • ก๊อป → TradingView → Pine Editor → วาง → Add to chart • "
+               "ราคาขยับมากให้ก๊อปใหม่ (แดชบอร์ดอัปเดตทุก 30 นาที)")
+
+
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
     st.title("เลขาตลาด • ทองคำ (Gold Focus)")
@@ -359,6 +405,7 @@ def body():
     st.divider(); render_macro()
     st.divider(); render_pivots()
     st.divider(); render_options()
+    st.divider(); render_pinescript()
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
