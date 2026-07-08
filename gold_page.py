@@ -401,18 +401,26 @@ def render_pinescript():
                "เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
 
 
+def _safe(fn, label):
+    try:
+        fn()
+    except Exception:
+        st.warning(f"⚠️ ส่วน «{label}» ขัดข้องชั่วคราว (แหล่งข้อมูลอาจติด rate limit) — "
+                   "ส่วนอื่นยังใช้ได้ เดี๋ยวรอบถัดไปจะกลับมาเอง")
+
+
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
     st.title("เลขาตลาด • ทองคำ (Gold Focus)")
     st.caption(f"อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')} • โหมดดูอย่างเดียว • "
                f"รีเฟรชอัตโนมัติทุก 30 นาที • อ้างอิง {primary}")
-    render_confluence()
-    st.divider(); render_zone_radar()
-    st.divider(); render_compare()
-    st.divider(); render_macro()
-    st.divider(); render_pivots()
-    st.divider(); render_options()
-    st.divider(); render_pinescript()
+    _safe(render_confluence, "สรุปทองคำ")
+    st.divider(); _safe(render_zone_radar, "เรดาร์โซน")
+    st.divider(); _safe(render_compare, "GC vs XAU")
+    st.divider(); _safe(render_macro, "มาโคร")
+    st.divider(); _safe(render_pivots, "Pivot")
+    st.divider(); _safe(render_options, "Options")
+    st.divider(); _safe(render_pinescript, "PineScript")
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
