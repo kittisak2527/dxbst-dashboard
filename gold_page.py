@@ -382,7 +382,8 @@ def render_pinescript():
              f'indicator("Gold Levels [{primary}]", overlay=true)',
              f"// GLD options (Yahoo) แปลงสเกลทอง ×{mult:.2f} • งวด {opt['expiry']} • proxy • {stamp}", ""]
     for v, t, c, s, w in walls:
-        lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
+        title = f"{t} {opt['expiry']} ({dte}d)" if t == "Max Pain" and dte is not None else t
+        lines.append(f'plot({v:.0f}, "{title}", color={c}, linewidth={w})')
     lines.append("")
     alert_levels = [(t, v) for v, t, c, s, w in walls]
     if piv:
@@ -393,17 +394,11 @@ def render_pinescript():
                          f'color=color.new({col}, 10), linewidth=1)')
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
-    lines.append("if barstate.islast")
-    for v, t, c, s, w in walls:
-        extra = f" | {opt['expiry']} ({dte}d)" if t == "Max Pain" and dte is not None else ""
-        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
-                     f'style=label.style_label_left, color=color.new({c}, 70), '
-                     f'textcolor=color.white, size=size.small)')
     lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • ก๊อป → Pine Editor → Add to chart • "
-               "ตั้งเตือน: คลิกขวากราฟ → Add alert → Condition เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
-               "ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
+    st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • ชื่อเส้นดูที่ legend (มุมซ้ายบน) "
+               "ค่าโชว์เป็นแท็บสีที่ scale ขวา • ตั้งเตือน: คลิกขวากราฟ → Add alert → "
+               "เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
