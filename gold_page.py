@@ -361,7 +361,7 @@ def render_options():
 
 
 def render_pinescript():
-    st.header("📋 PineScript — เส้นบนกราฟทอง (ข้อมูลจริง)")
+    st.header("📋 PineScript — เส้น + แจ้งเตือน บนกราฟทอง (ข้อมูลจริง)")
     opt = gld_snapshot()
     q = gold_quote(primary)
     if not opt or not q:
@@ -371,27 +371,39 @@ def render_pinescript():
     mult = q["price"] / opt["spot"]
     dte = _dte_gold(opt["expiry"])
     stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
-    hl = [(opt["callWall"] * mult, "Call Wall", "color.red", "hline.style_dashed", 2),
-          (opt["putWall"] * mult, "Put Wall", "color.green", "hline.style_dashed", 2)]
+    walls = [(opt["callWall"] * mult, "Call Wall", "color.red", "hline.style_dashed", 2),
+             (opt["putWall"] * mult, "Put Wall", "color.green", "hline.style_dashed", 2)]
     if opt["maxPain"]:
-        hl.append((opt["maxPain"] * mult, "Max Pain", "color.yellow", "hline.style_dotted", 2))
+        walls.append((opt["maxPain"] * mult, "Max Pain", "color.yellow", "hline.style_dotted", 2))
+    rh = gold_pivot_ref(primary)
+    piv = C.classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
+
     lines = ["//@version=5",
-             f'indicator("Gold Options Levels [{primary}]", overlay=true)',
-             f"// GLD options (Yahoo) แปลงเป็นสเกลทอง ×{mult:.2f} • งวด {opt['expiry']} • "
-             f"proxy โดยประมาณ • สร้าง {stamp}", ""]
-    for v, t, c, s, w in hl:
+             f'indicator("Gold Levels [{primary}]", overlay=true)',
+             f"// GLD options (Yahoo) แปลงสเกลทอง ×{mult:.2f} • งวด {opt['expiry']} • proxy • {stamp}", ""]
+    for v, t, c, s, w in walls:
         lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
     lines.append("")
+    alert_levels = [(t, v) for v, t, c, s, w in walls]
+    if piv:
+        lines.append('showPivots = input.bool(true, "แสดง Pivot รายวัน (เรดาร์โซน)")')
+        for name, col in [("R2", "color.gray"), ("R1", "color.gray"), ("PP", "color.blue"),
+                          ("S1", "color.gray"), ("S2", "color.gray")]:
+            lines.append(f'plot(showPivots ? {piv[name]:.0f} : na, "Pivot {name}", '
+                         f'color=color.new({col}, 10), linewidth=1)')
+            alert_levels.append((f"Pivot {name}", piv[name]))
+        lines.append("")
     lines.append("if barstate.islast")
-    for v, t, c, s, w in hl:
+    for v, t, c, s, w in walls:
         extra = f" | {opt['expiry']} ({dte}d)" if t == "Max Pain" and dte is not None else ""
         lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
                      f'style=label.style_label_left, color=color.new({c}, 70), '
                      f'textcolor=color.white, size=size.small)')
+    lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption(f"ค่าแปลงเป็นสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} ได้เลย • "
-               "เป็นค่าประมาณจาก GLD proxy • ก๊อป → TradingView → Pine Editor → วาง → Add to chart • "
-               "ราคาขยับมากให้ก๊อปใหม่ (แดชบอร์ดอัปเดตทุก 30 นาที)")
+    st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • ก๊อป → Pine Editor → Add to chart • "
+               "ตั้งเตือน: คลิกขวากราฟ → Add alert → Condition เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
+               "ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
