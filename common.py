@@ -185,6 +185,54 @@ def grade_from_votes(votes, mom, near_level):
 
 
 # ---------- ธีม + การ์ด ----------
+def compute_gex(options, spot, T):
+    """options: list ของ {K, oi, iv(ทศนิยม), cp('C'/'P')} → per-strike net + walls + regime"""
+    perC, perP, net = {}, {}, 0.0
+    for o in options:
+        if not o.get("iv") or o["iv"] <= 0:
+            continue
+        g = bs_gamma(spot, o["K"], T, o["iv"])
+        gex = g * o["oi"] * spot * spot * 0.01
+        if o["cp"] == "C":
+            perC[o["K"]] = perC.get(o["K"], 0.0) + gex; net += gex
+        else:
+            perP[o["K"]] = perP.get(o["K"], 0.0) + gex; net -= gex
+    strikes = sorted(set(perC) | set(perP))
+    if not strikes:
+        return None
+    netmap = {k: perC.get(k, 0.0) - perP.get(k, 0.0) for k in strikes}
+    call_wall = max(perC, key=perC.get) if perC else None
+    put_wall = max(perP, key=perP.get) if perP else None
+    return {"strikes": strikes, "net": netmap, "total": net,
+            "call_wall": call_wall, "put_wall": put_wall,
+            "regime": "Positive" if net >= 0 else "Negative"}
+
+
+def net_gex_at(options, S, T):
+    tot = 0.0
+    for o in options:
+        if not o.get("iv") or o["iv"] <= 0:
+            continue
+        g = bs_gamma(S, o["K"], T, o["iv"])
+        gex = g * o["oi"] * S * S * 0.01
+        tot += gex if o["cp"] == "C" else -gex
+    return tot
+
+
+def gamma_flip(options, spot, T, lo, hi, steps=41):
+    """หา 'จุดที่ Net GEX ข้ามศูนย์' (เส้นแบ่งโหมด) โดยคำนวณ GEX ซ้ำหลายระดับราคา"""
+    vals = [(lo + (hi - lo) * i / (steps - 1),) for i in range(steps)]
+    vals = [(S, net_gex_at(options, S, T)) for (S,) in vals]
+    cross = []
+    for i in range(1, len(vals)):
+        x0, v0 = vals[i - 1]; x1, v1 = vals[i]
+        if v0 == 0:
+            cross.append(x0)
+        elif (v0 < 0) != (v1 < 0) and (v1 - v0) != 0:
+            cross.append(x0 + (x1 - x0) * (0 - v0) / (v1 - v0))
+    return min(cross, key=lambda x: abs(x - spot)) if cross else None
+
+
 def pine_alerts(levels):
     """สร้างโค้ด PineScript alert (near-entry / break up / break down) ต่อ level
     levels: list ของ (name, value)"""
