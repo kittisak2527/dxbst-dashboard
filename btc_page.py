@@ -401,7 +401,7 @@ def render_gex():
 
 
 def render_pinescript():
-    st.header("📋 PineScript — เส้นบนกราฟ TradingView (ข้อมูลจริง)")
+    st.header("📋 PineScript — เส้น + แจ้งเตือน บนกราฟ (ข้อมูลจริง)")
     opt = deribit_options()
     gx = deribit_gex(0.20)
     if not opt and not gx:
@@ -409,32 +409,45 @@ def render_pinescript():
     base = opt or gx
     exp, spot = base["expiry"], base["spot"]
     stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
-    hl = []
+    walls = []
     if opt:
-        hl.append((opt["callWall"], "Call Wall (OI)", "color.red", "hline.style_dashed", 2))
-        hl.append((opt["putWall"], "Put Wall (OI)", "color.green", "hline.style_dashed", 2))
+        walls.append((opt["callWall"], "Call Wall (OI)", "color.red", "hline.style_dashed", 2))
+        walls.append((opt["putWall"], "Put Wall (OI)", "color.green", "hline.style_dashed", 2))
         if opt["maxPain"]:
-            hl.append((opt["maxPain"], "Max Pain", "color.yellow", "hline.style_dotted", 2))
+            walls.append((opt["maxPain"], "Max Pain", "color.yellow", "hline.style_dotted", 2))
     if gx:
-        hl.append((gx["call_wall"], "GEX Call Wall", "color.orange", "hline.style_solid", 1))
-        hl.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
+        walls.append((gx["call_wall"], "GEX Call Wall", "color.orange", "hline.style_solid", 1))
+        walls.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
+    rh = btc_pivot_ref()
+    piv = C.classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
+    dte = _dte_deribit(exp)
+
     lines = ["//@version=5",
-             'indicator("BTC Deribit Levels [Dashboard]", overlay=true)',
-             f"// งวด {exp} • spot {spot:,.0f} • ข้อมูลจริงจาก Deribit • สร้าง {stamp}", ""]
-    for v, t, c, s, w in hl:
+             'indicator("BTC Levels [Dashboard]", overlay=true)',
+             f"// ข้อมูลจริงจาก Deribit • งวด {exp} • spot {spot:,.0f} • สร้าง {stamp}", ""]
+    for v, t, c, s, w in walls:
         lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
     lines.append("")
+    alert_levels = [(t, v) for v, t, c, s, w in walls]
+    if piv:
+        lines.append('showPivots = input.bool(true, "แสดง Pivot รายวัน (เรดาร์โซน)")')
+        for name, col in [("R2", "color.gray"), ("R1", "color.gray"), ("PP", "color.blue"),
+                          ("S1", "color.gray"), ("S2", "color.gray")]:
+            lines.append(f'plot(showPivots ? {piv[name]:.0f} : na, "Pivot {name}", '
+                         f'color=color.new({col}, 10), linewidth=1)')
+            alert_levels.append((f"Pivot {name}", piv[name]))
+        lines.append("")
     lines.append("if barstate.islast")
-    dte = _dte_deribit(exp)
-    for v, t, c, s, w in hl:
+    for v, t, c, s, w in walls:
         extra = f" | {exp} ({dte}d)" if t == "Max Pain" and dte is not None else ""
         lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
                      f'style=label.style_label_left, color=color.new({c}, 70), '
                      f'textcolor=color.white, size=size.small)')
+    lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption("ก๊อปโค้ดนี้ → TradingView → Pine Editor → วาง → Add to chart • "
-               "ค่าจะนิ่งตามตอนที่ก๊อป (snapshot) ถ้าราคาขยับมากให้กลับมาก๊อปใหม่ (แดชบอร์ดอัปเดตทุก 30 นาที) • "
-               "เส้น: Wall/Max Pain จาก OI จริง + GEX Wall จาก gamma จริง")
+    st.caption("ก๊อป → Pine Editor → Add to chart • ตั้งเตือน: คลิกขวากราฟ → Add alert → "
+               "Condition เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
+               "ค่าเป็น snapshot ถ้าราคาขยับมากให้ก๊อปใหม่ • เส้น: Wall/Max Pain (OI) + GEX Wall + Pivot")
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
