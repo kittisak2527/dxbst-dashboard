@@ -426,7 +426,8 @@ def render_pinescript():
              'indicator("BTC Levels [Dashboard]", overlay=true)',
              f"// ข้อมูลจริงจาก Deribit • งวด {exp} • spot {spot:,.0f} • สร้าง {stamp}", ""]
     for v, t, c, s, w in walls:
-        lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
+        title = f"{t} {exp} ({dte}d)" if t == "Max Pain" and dte is not None else t
+        lines.append(f'plot({v:.0f}, "{title}", color={c}, linewidth={w})')
     lines.append("")
     alert_levels = [(t, v) for v, t, c, s, w in walls]
     if piv:
@@ -437,16 +438,10 @@ def render_pinescript():
                          f'color=color.new({col}, 10), linewidth=1)')
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
-    lines.append("if barstate.islast")
-    for v, t, c, s, w in walls:
-        extra = f" | {exp} ({dte}d)" if t == "Max Pain" and dte is not None else ""
-        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
-                     f'style=label.style_label_left, color=color.new({c}, 70), '
-                     f'textcolor=color.white, size=size.small)')
     lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption("ก๊อป → Pine Editor → Add to chart • ตั้งเตือน: คลิกขวากราฟ → Add alert → "
-               "Condition เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
+    st.caption("ชื่อเส้นดูที่ legend (มุมซ้ายบน) • ค่าโชว์เป็นแท็บสีที่ scale ขวา • "
+               "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
                "ค่าเป็น snapshot ถ้าราคาขยับมากให้ก๊อปใหม่ • เส้น: Wall/Max Pain (OI) + GEX Wall + Pivot")
 
 
