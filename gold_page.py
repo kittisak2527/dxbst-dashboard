@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import streamlit as st
 import yfinance as yf
+import altair as alt
 
 import common as C
 
@@ -61,19 +62,27 @@ def gold_pivot_ref(ref):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def opt_expiries():
-    return C.with_retry(lambda: list(yf.Ticker(OPTIONS_TICKER).options))
+    try:
+        return C.with_retry(lambda: list(yf.Ticker(OPTIONS_TICKER).options))
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def opt_chain(expiry):
     def _f():
         oc = yf.Ticker(OPTIONS_TICKER).option_chain(expiry)
-        c = oc.calls[["strike", "openInterest"]].copy()
-        p = oc.puts[["strike", "openInterest"]].copy()
+        cols = ["strike", "openInterest", "impliedVolatility"]
+        c = oc.calls[cols].copy()
+        p = oc.puts[cols].copy()
         for d in (c, p):
             d["openInterest"] = d["openInterest"].fillna(0)
+            d["impliedVolatility"] = d["impliedVolatility"].fillna(0)
         return c, p
-    return C.with_retry(_f)
+    try:
+        return C.with_retry(_f)
+    except Exception:
+        return None
 
 
 def pick_monthly(exps):
@@ -394,11 +403,26 @@ def render_pinescript():
                          f'color=color.new({col}, 10), linewidth=1)')
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
+    lines.append("if barstate.islast")
+    for v, t, c, s, w in walls:
+        lt = f"{t} {v:.0f}"
+        if t == "Max Pain" and dte is not None:
+            lt = f"{t} {v:.0f} | {opt['expiry']} ({dte}d)"
+        lines.append(f'    label.new(bar_index + 2, {v:.0f}, "{lt}", '
+                     f'style=label.style_label_right, color=color.new({c}, 70), '
+                     f'textcolor=color.white, size=size.small)')
+    if piv:
+        lines.append("    if showPivots")
+        for name in ["R2", "R1", "PP", "S1", "S2"]:
+            lines.append(f'        label.new(bar_index + 2, {piv[name]:.0f}, "Pivot {name} {piv[name]:.0f}", '
+                         f'style=label.style_label_right, color=color.new(color.gray, 80), '
+                         f'textcolor=color.white, size=size.tiny)')
+    lines.append("")
     lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • ชื่อเส้นดูที่ legend (มุมซ้ายบน) "
-               "ค่าโชว์เป็นแท็บสีที่ scale ขวา • ตั้งเตือน: คลิกขวากราฟ → Add alert → "
-               "เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
+    st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • มีป้ายชื่อกำกับแต่ละเส้น (ยื่นไปขวา ไม่ทับเทียน) • "
+               "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
+               "ราคาขยับมากให้ก๊อปใหม่ (snapshot)")
 
 
 def _safe(fn, label):
