@@ -137,23 +137,20 @@ def deribit_gex(pct=0.20):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     T = max((expd - now).total_seconds() + 8 * 3600, 3600) / (365 * 24 * 3600)
     lo, hi = spot * (1 - pct), spot * (1 + pct)
-    per = {}
+    lo, hi = spot * (1 - pct), spot * (1 + pct)
+    opts = []
     for p in parsed:
         if p["exp"] != exp or p["K"] < lo or p["K"] > hi or p["iv"] is None:
             continue
-        g = C.bs_gamma(spot, p["K"], T, float(p["iv"]) / 100.0)
-        gex = g * p["oi"] * (spot ** 2) * 0.01     # multiplier=1 (1 สัญญา=1 BTC)
-        d = per.setdefault(p["K"], {"call": 0.0, "put": 0.0})
-        d["call" if p["cp"] == "C" else "put"] += gex
-    if not per:
+        opts.append({"K": p["K"], "oi": p["oi"], "iv": float(p["iv"]) / 100.0, "cp": p["cp"]})
+    if not opts:
         return None
-    strikes = sorted(per)
-    net = {k: per[k]["call"] - per[k]["put"] for k in strikes}   # call บวก / put ลบ
-    total = sum(net.values())
-    call_wall = max(strikes, key=lambda k: per[k]["call"])
-    put_wall = max(strikes, key=lambda k: per[k]["put"])
-    return {"expiry": exp, "spot": spot, "strikes": strikes, "net": net,
-            "total": total, "call_wall": call_wall, "put_wall": put_wall}
+    gx = C.compute_gex(opts, spot, T)
+    if not gx:
+        return None
+    flip = C.gamma_flip(opts, spot, T, lo, hi)
+    gx.update({"expiry": exp, "spot": spot, "flip": flip})
+    return gx
 
 
 def nasdaq_change():
@@ -293,6 +290,12 @@ def render_zone_radar():
         levels.append({"name": "Put Wall", "v": opt["putWall"]})
         if opt["maxPain"]:
             levels.append({"name": "Max Pain", "v": opt["maxPain"]})
+    gx = deribit_gex(0.20)
+    if gx:
+        levels.append({"name": "GEX Call Wall", "v": gx["call_wall"]})
+        levels.append({"name": "GEX Put Wall", "v": gx["put_wall"]})
+        if gx.get("flip"):
+            levels.append({"name": "Gamma Flip", "v": gx["flip"]})
     above = sorted([x for x in levels if x["v"] > price], key=lambda x: x["v"])
     below = sorted([x for x in levels if x["v"] < price], key=lambda x: -x["v"])
     c1, c2, c3 = st.columns(3)
@@ -375,11 +378,18 @@ def render_gex():
     total_m = gx["total"] / 1e6
     pos = gx["total"] >= 0
     rcolor = "#38c172" if pos else "#e3506a"
+    flip = gx.get("flip")
+    flip_txt = f"{flip:,.0f}" if flip else "n/a"
+    if flip:
+        side = "เหนือ Flip → โหมดหน่วง" if gx["spot"] >= flip else "ใต้ Flip → โหมดเร่ง"
+    else:
+        side = "หา Flip ไม่เจอในกรอบ"
     C.hero_cards([
         ("Regime (Net GEX รวม)", ("🟢 Positive" if pos else "🔴 Negative"),
          f"{total_m:+,.1f}M • {'หน่วง' if pos else 'เร่ง'}", rcolor),
-        ("Call GEX Wall", f"{gx['call_wall']:,.0f}", "แนวต้านเชิงโครงสร้าง", "#e8c565"),
-        ("Put GEX Wall", f"{gx['put_wall']:,.0f}", "แนวรับเชิงโครงสร้าง", "#e8c565"),
+        ("Gamma Flip (เส้นแบ่งโหมด)", flip_txt, side, "#e8c565"),
+        ("Call / Put GEX Wall", f"{gx['call_wall']:,.0f} / {gx['put_wall']:,.0f}",
+         "แนวต้าน / แนวรับเชิงโครงสร้าง", "#e8c565"),
     ])
     df = C.pd.DataFrame({
         "strike": [str(int(k)) for k in gx["strikes"]],
@@ -395,8 +405,8 @@ def render_gex():
     ).properties(height=320)
     st.altair_chart(chart, use_container_width=True)
     st.caption(f"งวด {gx['expiry']} • spot {gx['spot']:,.0f} • กรอบ ±20% • "
-               "GEX = gamma×OI×spot²×0.01 (Call บวก / Put ลบ) • gamma คำนวณจาก mark_iv ของ Deribit (Black-Scholes)")
-    st.info("📝 Positive GEX รวม = ดีลเลอร์มักหน่วงราคา (ตลาดนิ่ง/เข้ากรอบ) • Negative = เร่งราคา (ผันผวน/cascade) • "
+               "GEX = gamma×OI×spot²×0.01 (Call บวก / Put ลบ) • gamma จาก mark_iv ของ Deribit (Black-Scholes)")
+    st.info("📝 Gamma Flip = ราคาที่ Net GEX ข้ามศูนย์ • เหนือ Flip มักหน่วง (นิ่ง/เข้ากรอบ) • ใต้ Flip มักเร่ง (ผันผวน/cascade) • "
             "อิงสมมติฐาน 'dealer short call / long put' ซึ่งไม่จริงเสมอไป — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
 
 
@@ -418,6 +428,8 @@ def render_pinescript():
     if gx:
         walls.append((gx["call_wall"], "GEX Call Wall", "color.orange", "hline.style_solid", 1))
         walls.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
+        if gx.get("flip"):
+            walls.append((gx["flip"], "Gamma Flip", "color.fuchsia", "hline.style_solid", 2))
     rh = btc_pivot_ref()
     piv = C.classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
     dte = _dte_deribit(exp)
@@ -438,11 +450,26 @@ def render_pinescript():
                          f'color=color.new({col}, 10), linewidth=1)')
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
+    lines.append("if barstate.islast")
+    for v, t, c, s, w in walls:
+        lt = f"{t} {v:.0f}"
+        if t == "Max Pain" and dte is not None:
+            lt = f"{t} {v:.0f} | {exp} ({dte}d)"
+        lines.append(f'    label.new(bar_index + 2, {v:.0f}, "{lt}", '
+                     f'style=label.style_label_right, color=color.new({c}, 70), '
+                     f'textcolor=color.white, size=size.small)')
+    if piv:
+        lines.append("    if showPivots")
+        for name in ["R2", "R1", "PP", "S1", "S2"]:
+            lines.append(f'        label.new(bar_index + 2, {piv[name]:.0f}, "Pivot {name} {piv[name]:.0f}", '
+                         f'style=label.style_label_right, color=color.new(color.gray, 80), '
+                         f'textcolor=color.white, size=size.tiny)')
+    lines.append("")
     lines += C.pine_alerts(alert_levels)
     st.code("\n".join(lines), language="pine")
-    st.caption("ชื่อเส้นดูที่ legend (มุมซ้ายบน) • ค่าโชว์เป็นแท็บสีที่ scale ขวา • "
+    st.caption("มีป้ายชื่อกำกับแต่ละเส้น (ยื่นไปขวา ไม่ทับเทียน) • "
                "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
-               "ค่าเป็น snapshot ถ้าราคาขยับมากให้ก๊อปใหม่ • เส้น: Wall/Max Pain (OI) + GEX Wall + Pivot")
+               "ค่าเป็น snapshot ถ้าราคาขยับมากให้ก๊อปใหม่ • เส้น: Wall/Max Pain (OI) + GEX Wall + Gamma Flip + Pivot")
 
 
 def _safe(fn, label):
