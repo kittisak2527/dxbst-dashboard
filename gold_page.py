@@ -127,6 +127,46 @@ def gld_snapshot():
         return None
 
 
+def gld_gex(pct=0.20):
+    """คำนวณ GEX ราย strike จาก GLD (impliedVolatility ของ Yahoo) แปลงเป็นสเกลทอง"""
+    try:
+        me = pick_monthly(opt_expiries())
+        gdf = C.yf_daily(OPTIONS_TICKER)
+        gld_spot = float(gdf["close"].iloc[-1]) if gdf is not None and len(gdf) else None
+        q = gold_quote(primary)
+        if not me or gld_spot is None or not q:
+            return None
+        ch = opt_chain(me)
+        if not ch:
+            return None
+        calls, puts = ch
+        lo, hi = gld_spot * (1 - pct), gld_spot * (1 + pct)
+        opts = []
+        for df, cp in ((calls, "C"), (puts, "P")):
+            for r in df.itertuples():
+                iv = float(r.impliedVolatility)
+                if lo <= r.strike <= hi and iv > 0:
+                    opts.append({"K": float(r.strike), "oi": float(r.openInterest), "iv": iv, "cp": cp})
+        if not opts:
+            return None
+        d = datetime.strptime(me, "%Y-%m-%d")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        T = max((d - now).total_seconds() + 20 * 3600, 3600) / (365 * 24 * 3600)   # ~ปิดตลาด US
+        gx = C.compute_gex(opts, gld_spot, T)
+        if not gx:
+            return None
+        flip = C.gamma_flip(opts, gld_spot, T, lo, hi)
+        mult = q["price"] / gld_spot
+        return {"expiry": me, "gld_spot": gld_spot, "mult": mult, "gold_price": q["price"],
+                "total": gx["total"], "regime": gx["regime"],
+                "strikes_gold": [k * mult for k in gx["strikes"]],
+                "net": [gx["net"][k] for k in gx["strikes"]],
+                "call_wall": gx["call_wall"] * mult, "put_wall": gx["put_wall"] * mult,
+                "flip": flip * mult if flip else None}
+    except Exception:
+        return None
+
+
 def gold_confluence():
     q = gold_quote(primary)
     if not q:
@@ -242,6 +282,12 @@ def render_zone_radar():
         levels.append({"name": "Put Wall", "v": opt["putWall"] * mult})
         if opt["maxPain"]:
             levels.append({"name": "Max Pain", "v": opt["maxPain"] * mult})
+    gx = gld_gex(0.20)
+    if gx:
+        levels.append({"name": "GEX Call Wall", "v": gx["call_wall"]})
+        levels.append({"name": "GEX Put Wall", "v": gx["put_wall"]})
+        if gx.get("flip"):
+            levels.append({"name": "Gamma Flip", "v": gx["flip"]})
     above = sorted([x for x in levels if x["v"] > price], key=lambda x: x["v"])
     below = sorted([x for x in levels if x["v"] < price], key=lambda x: -x["v"])
     c1, c2, c3 = st.columns(3)
@@ -369,6 +415,45 @@ def render_options():
         st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ ใช้เป็นโซนอ้างอิง")
 
 
+def render_gex():
+    st.header("🧮 GEX by Strike — GLD (คำนวณเอง • สเกลทอง)")
+    gx = gld_gex(0.20)
+    if not gx:
+        st.info("ยังคำนวณ GEX ทองไม่ได้ (GLD options อาจไม่พร้อม/เพี้ยน) — ลองรีเฟรช"); return
+    pos = gx["total"] >= 0
+    rcolor = "#38c172" if pos else "#e3506a"
+    flip = gx.get("flip")
+    flip_txt = f"{flip:,.0f}" if flip else "n/a"
+    if flip:
+        side = "เหนือ Flip → หน่วง" if gx["gold_price"] >= flip else "ใต้ Flip → เร่ง"
+    else:
+        side = "หา Flip ไม่เจอในกรอบ"
+    C.hero_cards([
+        ("Regime (Net GEX รวม)", ("🟢 Positive" if pos else "🔴 Negative"),
+         f"{'หน่วง' if pos else 'เร่ง'}", rcolor),
+        ("Gamma Flip (สเกลทอง)", flip_txt, side, "#e8c565"),
+        ("Call / Put GEX Wall", f"{gx['call_wall']:,.0f} / {gx['put_wall']:,.0f}",
+         "แนวต้าน / แนวรับ (สเกลทอง)", "#e8c565"),
+    ])
+    df = C.pd.DataFrame({
+        "strike": [f"{k:,.0f}" for k in gx["strikes_gold"]],
+        "GEX": [v / 1e6 for v in gx["net"]],
+    })
+    df["ฝั่ง"] = ["Call (บวก)" if v >= 0 else "Put (ลบ)" for v in df["GEX"]]
+    chart = alt.Chart(df).mark_bar().encode(
+        x=alt.X("strike:N", title="Strike (สเกลทอง)", sort=list(df["strike"])),
+        y=alt.Y("GEX:Q", title="Net GEX (สัมพัทธ์)"),
+        color=alt.Color("ฝั่ง:N", scale=alt.Scale(domain=["Call (บวก)", "Put (ลบ)"],
+                        range=["#38c172", "#e3506a"]), legend=alt.Legend(title=None)),
+        tooltip=["strike", alt.Tooltip("GEX:Q", format="+.2f")],
+    ).properties(height=320)
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(f"งวด {gx['expiry']} • GLD spot {gx['gld_spot']:,.2f} • ตัวคูณสเกลทอง ×{gx['mult']:.2f} • กรอบ ±20% • "
+               "gamma จาก impliedVolatility ของ GLD (Black-Scholes) — ค่าประมาณจาก GLD proxy")
+    st.info("📝 เหนือ Gamma Flip มักหน่วง (นิ่ง/เข้ากรอบ) • ใต้ Flip มักเร่ง (ผันผวน) • "
+            "GLD เป็น proxy ของทอง (แม่นน้อยกว่า BTC/Deribit) — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
+
+
 def render_pinescript():
     st.header("📋 PineScript — เส้น + แจ้งเตือน บนกราฟทอง (ข้อมูลจริง)")
     opt = gld_snapshot()
@@ -384,6 +469,12 @@ def render_pinescript():
              (opt["putWall"] * mult, "Put Wall", "color.green", "hline.style_dashed", 2)]
     if opt["maxPain"]:
         walls.append((opt["maxPain"] * mult, "Max Pain", "color.yellow", "hline.style_dotted", 2))
+    gx = gld_gex(0.20)
+    if gx:
+        walls.append((gx["call_wall"], "GEX Call Wall", "color.orange", "hline.style_solid", 1))
+        walls.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
+        if gx.get("flip"):
+            walls.append((gx["flip"], "Gamma Flip", "color.fuchsia", "hline.style_solid", 2))
     rh = gold_pivot_ref(primary)
     piv = C.classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
 
@@ -444,6 +535,7 @@ def body():
     st.divider(); _safe(render_macro, "มาโคร")
     st.divider(); _safe(render_pivots, "Pivot")
     st.divider(); _safe(render_options, "Options")
+    st.divider(); _safe(render_gex, "GEX")
     st.divider(); _safe(render_pinescript, "PineScript")
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
