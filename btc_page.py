@@ -445,17 +445,25 @@ def render_pinescript():
                "ค่าเป็น snapshot ถ้าราคาขยับมากให้ก๊อปใหม่ • เส้น: Wall/Max Pain (OI) + GEX Wall + Pivot")
 
 
+def _safe(fn, label):
+    try:
+        fn()
+    except Exception:
+        st.warning(f"⚠️ ส่วน «{label}» ขัดข้องชั่วคราว (แหล่งข้อมูลอาจติด rate limit) — "
+                   "ส่วนอื่นยังใช้ได้ เดี๋ยวรอบถัดไปจะกลับมาเอง")
+
+
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
     st.title("เลขาตลาด • BTCUSD")
     st.caption(f"อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')} • โหมดดูอย่างเดียว • "
                "รีเฟรชอัตโนมัติทุก 30 นาที • ราคา Yahoo • options Deribit")
-    render_confluence()
-    st.divider(); render_zone_radar()
-    st.divider(); render_pivots()
-    st.divider(); render_options()
-    st.divider(); render_gex()
-    st.divider(); render_pinescript()
+    _safe(render_confluence, "สรุป BTC")
+    st.divider(); _safe(render_zone_radar, "เรดาร์โซน")
+    st.divider(); _safe(render_pivots, "Pivot")
+    st.divider(); _safe(render_options, "Options")
+    st.divider(); _safe(render_gex, "GEX")
+    st.divider(); _safe(render_pinescript, "PineScript")
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
