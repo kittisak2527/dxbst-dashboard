@@ -176,6 +176,30 @@ def grade_from_votes(votes, mom, near_level):
 
 
 # ---------- ธีม + การ์ด ----------
+def pine_alerts(levels):
+    """สร้างโค้ด PineScript alert (near-entry / break up / break down) ต่อ level
+    levels: list ของ (name, value)"""
+    out = ["", "// ===== ALERTS: สร้าง alert แบบ 'Any alert() function call' =====",
+           'nearPct = input.float(0.25, "ระยะเตือนใกล้โซน %", minval=0.05, step=0.05) / 100',
+           'alertsOn = input.bool(true, "เปิดแจ้งเตือน")', ""]
+    for i, (name, v) in enumerate(levels):
+        lv = f"{v:.2f}"
+        out += [
+            f"_near{i} = math.abs(close - {lv}) / {lv} <= nearPct",
+            f"_prev{i} = math.abs(close[1] - {lv}) / {lv} <= nearPct",
+            f"_xu{i} = ta.crossover(close, {lv})",
+            f"_xd{i} = ta.crossunder(close, {lv})",
+            f"if alertsOn and _near{i} and not _prev{i}",
+            f'    alert("⚡ ราคาเข้าใกล้ {name} {lv}", alert.freq_once_per_bar)',
+            f"if alertsOn and _xu{i}",
+            f'    alert("⬆️ เบรกขึ้นผ่าน {name} {lv}", alert.freq_once_per_bar)',
+            f"if alertsOn and _xd{i}",
+            f'    alert("⬇️ เบรกลงผ่าน {name} {lv}", alert.freq_once_per_bar)',
+            "",
+        ]
+    return out
+
+
 def apply_theme():
     st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
