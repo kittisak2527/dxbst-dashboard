@@ -234,6 +234,15 @@ def btc_confluence():
 
 
 # ---------- render ----------
+def _dte_deribit(exp):
+    try:
+        d = datetime.strptime(exp, "%d%b%y")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return max(0, (d - now).days)
+    except Exception:
+        return None
+
+
 def render_confluence():
     st.header("₿ สรุป BTCUSD (Confluence)")
     g = btc_confluence()
@@ -343,13 +352,16 @@ def render_options():
     opt = deribit_options()
     if not opt:
         st.warning("ดึง Deribit ไม่ได้ในรอบนี้ — ลองรีเฟรช"); return
-    st.caption(f"งวด (OI หนาสุด): {opt['expiry']} • สเกล USD ตรงกับราคา BTC")
+    dte = _dte_deribit(opt["expiry"])
+    dte_txt = f" • เหลือ {dte} วันถึงหมดอายุ" if dte is not None else ""
+    st.caption(f"งวด (OI หนาสุด): {opt['expiry']}{dte_txt} • สเกล USD ตรงกับราคา BTC")
     r = st.columns(5)
     r[0].metric("Index (spot)", f"{opt['spot']:,.0f}")
     r[1].metric("PCR", f"{opt['pcr']:.2f}")
     r[2].metric("Call Wall", f"{opt['callWall']:,.0f}")
     r[3].metric("Put Wall", f"{opt['putWall']:,.0f}")
-    r[4].metric("Max Pain", f"{opt['maxPain']:,.0f}" if opt["maxPain"] else "n/a")
+    r[4].metric("Max Pain", f"{opt['maxPain']:,.0f}" if opt["maxPain"] else "n/a",
+                f"เหลือ {dte} วัน" if dte is not None else None, delta_color="off")
     st.caption("Call Wall = แนวต้าน • Put Wall = แนวรับ • PCR>1 = put มากกว่า call • กรอบ ±20%")
     if opt["anomalous"]:
         st.warning("⚠️ ข้อมูล options งวดนี้อาจเพี้ยน — ใช้เฉพาะ pivot (ลองรีเฟรช)")
@@ -413,8 +425,10 @@ def render_pinescript():
         lines.append(f'hline({v:.0f}, "{t}", color={c}, linestyle={s}, linewidth={w})')
     lines.append("")
     lines.append("if barstate.islast")
+    dte = _dte_deribit(exp)
     for v, t, c, s, w in hl:
-        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}", '
+        extra = f" | {exp} ({dte}d)" if t == "Max Pain" and dte is not None else ""
+        lines.append(f'    label.new(bar_index, {v:.0f}, "{t} {v:.0f}{extra}", '
                      f'style=label.style_label_left, color=color.new({c}, 70), '
                      f'textcolor=color.white, size=size.small)')
     st.code("\n".join(lines), language="pine")
