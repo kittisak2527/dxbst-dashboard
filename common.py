@@ -61,12 +61,18 @@ def _yf_series(symbol, interval, period):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def yf_daily(symbol):
-    return with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
+    try:
+        return with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def yf_hourly(symbol):
-    return with_retry(lambda: _yf_series(symbol, "60m", "7d"))
+    try:
+        return with_retry(lambda: _yf_series(symbol, "60m", "7d"))
+    except Exception:
+        return None
 
 
 def _td_series(symbol, interval, size, key):
@@ -85,7 +91,10 @@ def _td_series(symbol, interval, size, key):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def td_daily(symbol, key):
-    return with_retry(lambda: _td_series(symbol, "1day", 30, key))
+    try:
+        return with_retry(lambda: _td_series(symbol, "1day", 30, key))
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
