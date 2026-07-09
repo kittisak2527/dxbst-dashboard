@@ -127,6 +127,13 @@ def gld_snapshot():
         return None
 
 
+def gold_mult():
+    """ตัวคูณ GLD→ทอง ล็อกที่ราคาปิดวันเดียวกัน (กัน Phantom Wall)"""
+    under = C.td_daily(XAU_TD, td_key) if primary == "XAU" else C.yf_daily(GC_YF)
+    etf = C.yf_daily(OPTIONS_TICKER)
+    return C.aligned_mult(under, etf)
+
+
 def gld_gex(pct=0.20):
     """คำนวณ GEX ราย strike จาก GLD (impliedVolatility ของ Yahoo) แปลงเป็นสเกลทอง"""
     try:
@@ -156,8 +163,12 @@ def gld_gex(pct=0.20):
         if not gx:
             return None
         flip = C.gamma_flip(opts, gld_spot, T, lo, hi)
-        mult = q["price"] / gld_spot
+        am = gold_mult()
+        if not am:
+            return None
+        mult = am["mult"]
         return {"expiry": me, "gld_spot": gld_spot, "mult": mult, "gold_price": q["price"],
+                "anchor_date": am["date"], "stale_days": am["stale_days"],
                 "total": gx["total"], "regime": gx["regime"],
                 "strikes_gold": [k * mult for k in gx["strikes"]],
                 "net": [gx["net"][k] for k in gx["strikes"]],
@@ -276,8 +287,9 @@ def render_zone_radar():
         for k, v in dp.items():
             levels.append({"name": nm[k], "v": v})
     opt = gld_snapshot()
-    if opt and not opt["anomalous"] and opt["spot"]:
-        mult = price / opt["spot"]
+    am = gold_mult()
+    if opt and not opt["anomalous"] and am:
+        mult = am["mult"]
         levels.append({"name": "Call Wall", "v": opt["callWall"] * mult})
         levels.append({"name": "Put Wall", "v": opt["putWall"] * mult})
         if opt["maxPain"]:
@@ -404,15 +416,21 @@ def render_options():
         st.warning("⚠️ ข้อมูล Options งวดนี้อาจเพี้ยน — ข้ามการแปลงสเกลทอง (ลองรีเฟรช)")
         return
     q = gold_quote(primary)
-    if q:
-        mult = q["price"] / opt["spot"]
-        st.markdown(f"**🪙 แปลงเป็นสเกลทอง ({primary}) • ตัวคูณ ×{mult:.2f}**")
+    am = gold_mult()
+    if q and am:
+        mult = am["mult"]
+        st.markdown(f"**🪙 แปลงเป็นสเกลทอง ({primary}) • ตัวคูณล็อก ×{mult:.4f}**")
         r2 = st.columns(4)
-        r2[0].metric("ทองอ้างอิง", f"{q['price']:,.2f}")
+        r2[0].metric("ทองอ้างอิง (สด)", f"{q['price']:,.2f}")
         r2[1].metric("Call Wall → ทอง", f"{opt['callWall']*mult:,.0f}")
         r2[2].metric("Put Wall → ทอง", f"{opt['putWall']*mult:,.0f}")
         r2[3].metric("Max Pain → ทอง", f"{opt['maxPain']*mult:,.0f}" if opt["maxPain"] else "n/a")
-        st.caption("แปลงจาก strike GLD × (ราคาทอง ÷ ราคา GLD) • เป็นค่าประมาณ ใช้เป็นโซนอ้างอิง")
+        st.caption(f"🔒 ตัวคูณล็อกจากราคาปิด **วันเดียวกัน** ({am['date']}): "
+                   f"{primary} {am['under']:,.2f} ÷ GLD {am['etf']:,.2f} — "
+                   "ไม่ใช้ราคาสด/GLD ค้าง เพื่อกัน 'Phantom Wall' (เส้นวิ่งหนีราคา)")
+        if am["stale_days"] >= 1:
+            st.info(f"ℹ️ GLD ปิดตลาดมาแล้ว {am['stale_days']} วัน (ทองยังวิ่ง 24 ชม.) — "
+                    "เส้นยังอ้างอิงโครงสร้าง options ล่าสุดที่มี ถือเป็นเรื่องปกติ")
 
 
 def render_gex():
@@ -448,7 +466,8 @@ def render_gex():
         tooltip=["strike", alt.Tooltip("GEX:Q", format="+.2f")],
     ).properties(height=320)
     st.altair_chart(chart, use_container_width=True)
-    st.caption(f"งวด {gx['expiry']} • GLD spot {gx['gld_spot']:,.2f} • ตัวคูณสเกลทอง ×{gx['mult']:.2f} • กรอบ ±20% • "
+    st.caption(f"งวด {gx['expiry']} • GLD spot {gx['gld_spot']:,.2f} • ตัวคูณล็อก ×{gx['mult']:.4f} "
+               f"(อ้างอิงปิดวันเดียวกัน {gx['anchor_date']}) • กรอบ ±20% • "
                "gamma จาก impliedVolatility ของ GLD (Black-Scholes) — ค่าประมาณจาก GLD proxy")
     st.info("📝 เหนือ Gamma Flip มักหน่วง (นิ่ง/เข้ากรอบ) • ใต้ Flip มักเร่ง (ผันผวน) • "
             "GLD เป็น proxy ของทอง (แม่นน้อยกว่า BTC/Deribit) — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
@@ -462,7 +481,10 @@ def render_pinescript():
         st.info("ยังไม่มีข้อมูล options ในรอบนี้ — ลองรีเฟรช"); return
     if opt["anomalous"]:
         st.warning("⚠️ ข้อมูล Options งวดนี้เพี้ยน — ยังเจนเส้นไม่ได้ (รอค่ากระจายปกติแล้วลองใหม่)"); return
-    mult = q["price"] / opt["spot"]
+    am = gold_mult()
+    if not am:
+        st.info("ยังคำนวณตัวคูณสเกลทองไม่ได้ (ต้องมีราคาปิดวันเดียวกันของ GC และ GLD)"); return
+    mult = am["mult"]
     dte = _dte_gold(opt["expiry"])
     stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
     walls = [(opt["callWall"] * mult, "Call Wall", "color.red", "hline.style_dashed", 2),
@@ -480,7 +502,8 @@ def render_pinescript():
 
     lines = ["//@version=5",
              f'indicator("Gold Levels [{primary}]", overlay=true)',
-             f"// GLD options (Yahoo) แปลงสเกลทอง ×{mult:.2f} • งวด {opt['expiry']} • proxy • {stamp}", ""]
+             f"// GLD options (Yahoo) แปลงสเกลทอง ×{mult:.4f} (ล็อกจากปิดวันเดียวกัน {am['date']}) • "
+             f"งวด {opt['expiry']} • proxy • {stamp}", ""]
     for v, t, c, s, w in walls:
         title = f"{t} {opt['expiry']} ({dte}d)" if t == "Max Pain" and dte is not None else t
         lines.append(f'plot({v:.0f}, "{title}", color={c}, linewidth={w})')
