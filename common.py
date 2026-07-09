@@ -233,6 +233,29 @@ def gamma_flip(options, spot, T, lo, hi, steps=41):
     return min(cross, key=lambda x: abs(x - spot)) if cross else None
 
 
+def aligned_mult(under_df, etf_df):
+    """ตัวคูณสเกล ETF→สินทรัพย์อ้างอิง โดยใช้ 'ราคาปิดวันเดียวกัน' (กัน Phantom Wall)
+
+    ปัญหาที่แก้: ถ้าใช้ ราคาสด ÷ ETF ที่ค้าง (ตลาด US ปิด) ตัวคูณจะวิ่งตามราคา
+    ทำให้เส้น wall เลื่อนหนีราคาตลอด ไม่มีวันถูกแตะ
+    """
+    if under_df is None or etf_df is None or under_df.empty or etf_df.empty:
+        return None
+    u = under_df.copy(); e = etf_df.copy()
+    u["d"] = pd.to_datetime(u["dt"]).dt.date
+    e["d"] = pd.to_datetime(e["dt"]).dt.date
+    common = sorted(set(u["d"]) & set(e["d"]))
+    if not common:
+        return None
+    d = common[-1]
+    uc = float(u[u["d"] == d]["close"].iloc[-1])
+    ec = float(e[e["d"] == d]["close"].iloc[-1])
+    if ec <= 0 or uc <= 0:
+        return None
+    stale_days = (max(u["d"]) - d).days
+    return {"mult": uc / ec, "date": d, "under": uc, "etf": ec, "stale_days": stale_days}
+
+
 def pine_alerts(levels):
     """สร้างโค้ด PineScript alert (near-entry / break up / break down) ต่อ level
     levels: list ของ (name, value)"""
