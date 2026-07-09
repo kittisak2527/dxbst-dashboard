@@ -118,6 +118,11 @@ def fxe_snapshot():
         return None
 
 
+def eur_mult():
+    """ตัวคูณ FXE→EUR ล็อกที่ราคาปิดวันเดียวกัน (กัน Phantom Wall)"""
+    return C.aligned_mult(C.yf_daily(EUR_YF), C.yf_daily(OPTIONS_TICKER))
+
+
 def fxe_gex(pct=0.20):
     """GEX ราย strike จาก FXE (impliedVolatility) แปลงเป็นสเกล EUR"""
     try:
@@ -147,8 +152,12 @@ def fxe_gex(pct=0.20):
         if not gx:
             return None
         flip = C.gamma_flip(opts, fxe_spot, T, lo, hi)
-        mult = q["price"] / fxe_spot
+        am = eur_mult()
+        if not am:
+            return None
+        mult = am["mult"]
         return {"expiry": me, "fxe_spot": fxe_spot, "mult": mult, "eur_price": q["price"],
+                "anchor_date": am["date"], "stale_days": am["stale_days"],
                 "total": gx["total"], "regime": gx["regime"],
                 "strikes_eur": [k * mult for k in gx["strikes"]],
                 "net": [gx["net"][k] for k in gx["strikes"]],
@@ -259,8 +268,9 @@ def render_zone_radar():
         for k, v in dp.items():
             levels.append({"name": nm[k], "v": v})
     opt = fxe_snapshot()
-    if opt and not opt["anomalous"] and opt["spot"]:
-        mult = price / opt["spot"]
+    am = eur_mult()
+    if opt and not opt["anomalous"] and am:
+        mult = am["mult"]
         levels.append({"name": "Call Wall", "v": opt["callWall"] * mult})
         levels.append({"name": "Put Wall", "v": opt["putWall"] * mult})
         if opt["maxPain"]:
@@ -360,15 +370,19 @@ def render_options():
         st.warning("⚠️ ข้อมูล FXE options งวดนี้บาง/เพี้ยน — ข้ามการแปลงสเกล (FXE ลิควิดน้อย เป็นเรื่องปกติ)")
         return
     q = eur_quote()
-    if q:
-        mult = q["price"] / opt["spot"]
-        st.markdown(f"**💶 แปลงเป็นสเกล EUR • ตัวคูณ ×{mult:.4f}**")
+    am = eur_mult()
+    if q and am:
+        mult = am["mult"]
+        st.markdown(f"**💶 แปลงเป็นสเกล EUR • ตัวคูณล็อก ×{mult:.4f}**")
         r2 = st.columns(4)
-        r2[0].metric("EUR อ้างอิง", f"{q['price']:,.4f}")
+        r2[0].metric("EUR อ้างอิง (สด)", f"{q['price']:,.4f}")
         r2[1].metric("Call Wall → EUR", f"{opt['callWall']*mult:,.4f}")
         r2[2].metric("Put Wall → EUR", f"{opt['putWall']*mult:,.4f}")
         r2[3].metric("Max Pain → EUR", f"{opt['maxPain']*mult:,.4f}" if opt["maxPain"] else "n/a")
-        st.caption("แปลงจาก strike FXE × (EUR ÷ FXE) • เป็นค่าประมาณ ใช้เป็นโซนอ้างอิง")
+        st.caption(f"🔒 ตัวคูณล็อกจากราคาปิด **วันเดียวกัน** ({am['date']}): "
+                   f"EUR {am['under']:,.4f} ÷ FXE {am['etf']:,.2f} — กัน 'Phantom Wall' (เส้นวิ่งหนีราคา)")
+        if am["stale_days"] >= 1:
+            st.info(f"ℹ️ FXE ปิดตลาดมาแล้ว {am['stale_days']} วัน (EUR วิ่ง 24/5) — เป็นเรื่องปกติ")
 
 
 def render_gex():
@@ -418,7 +432,10 @@ def render_pinescript():
         st.info("ยังไม่มีข้อมูล options ในรอบนี้ — ลองรีเฟรช"); return
     if opt["anomalous"]:
         st.warning("⚠️ ข้อมูล FXE options งวดนี้บาง/เพี้ยน — ยังเจนเส้นไม่ได้ (FXE ลิควิดน้อย ลองรีเฟรช)"); return
-    mult = q["price"] / opt["spot"]
+    am = eur_mult()
+    if not am:
+        st.info("ยังคำนวณตัวคูณสเกล EUR ไม่ได้ (ต้องมีราคาปิดวันเดียวกันของ EUR และ FXE)"); return
+    mult = am["mult"]
     dte = _dte_eur(opt["expiry"])
     stamp = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
     walls = [(opt["callWall"] * mult, "Call Wall", "color.red", "hline.style_dashed", 2),
@@ -436,7 +453,8 @@ def render_pinescript():
 
     lines = ["//@version=5",
              'indicator("EUR Levels [EURUSD]", overlay=true)',
-             f"// FXE options (Yahoo) แปลงสเกล EUR ×{mult:.4f} • งวด {opt['expiry']} • proxy • {stamp}", ""]
+             f"// FXE options (Yahoo) แปลงสเกล EUR ×{mult:.4f} (ล็อกจากปิดวันเดียวกัน {am['date']}) • "
+             f"งวด {opt['expiry']} • proxy • {stamp}", ""]
     for v, t, c, s, w in walls:
         title = f"{t} {v:.4f}" if t != "Max Pain" else f"{t} {v:.4f}"
         lines.append(f'plot({v:.4f}, "{title}", color={c}, linewidth={w})')
