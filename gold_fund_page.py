@@ -73,13 +73,13 @@ def render_macro(data):
 # ---------- 3) ข่าว + sentiment ----------
 def render_news(data):
     st.header("📰 ข่าว + ทิศทาง (Sentiment)")
-    news = data["news"]
-    if news is None:
-        st.info("ยังดึงข่าวไม่ได้ — ต้องตั้ง ALPHAVANTAGE_API_KEY ใน Secrets "
-                "(หรืออาจใช้โควตาครบ 25 ครั้ง/วันแล้ว เดี๋ยวรีเซ็ตพรุ่งนี้)")
-        return
-    if not news:
-        st.info("รอบนี้ยังไม่มีข่าวเข้ามา — ลองรีเฟรชอีกครั้ง")
+    news = data["news"] or {}
+    items = news.get("items", [])
+    note = news.get("note")
+    if not items:
+        # โชว์เหตุผลจริงจาก Alpha Vantage เพื่อ debug (เช่น ข้อความ rate limit)
+        st.info(f"ยังไม่มีข่าวในรอบนี้ — เหตุผลจาก Alpha Vantage: {note}"
+                if note else "รอบนี้ยังไม่มีข่าว — ลองรีเฟรชอีกครั้ง")
         return
     avg = data.get("news_avg")
     if avg is not None:
