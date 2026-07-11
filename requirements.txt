@@ -1,7 +1,7 @@
-streamlit==1.59.1
-pandas==2.2.3
-numpy==1.26.4
-pyarrow==25.0.0
-yfinance==1.5.1
-requests==2.34.2
-altair==6.2.2
+streamlit
+pandas
+numpy
+pyarrow
+yfinance
+requests
+altair
