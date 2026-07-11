@@ -159,11 +159,14 @@ def econ_calendar(currencies=("USD", "EUR"), min_impact="Medium"):
             data = requests.get(url, headers=UA, timeout=TIMEOUT).json()
         except Exception:
             continue                          # สัปดาห์หน้าอาจยังไม่มี feed -> ข้ามไป
+        if not isinstance(data, list):
+            continue                          # กัน feed คืน error page/dict แทน list
         for e in data:
             cur = e.get("country", "")        # ff ใช้ field 'country' เป็นสกุลเงิน เช่น USD/EUR
             if cur not in currencies:
                 continue
-            if rank.get(e.get("impact", ""), 0) < floor:
+            imp = str(e.get("impact", "")).strip().capitalize()   # กันตัวพิมพ์เล็ก/ใหญ่ไม่ตรง
+            if rank.get(imp, 0) < floor:
                 continue
             try:
                 dt = datetime.fromisoformat(e.get("date"))   # เช่น 2026-07-14T12:30:00-04:00
@@ -174,7 +177,7 @@ def econ_calendar(currencies=("USD", "EUR"), min_impact="Medium"):
                 continue
             seen.add(key)
             out.append({
-                "title": e.get("title", ""), "currency": cur, "impact": e.get("impact", ""),
+                "title": e.get("title", ""), "currency": cur, "impact": imp,
                 "datetime": dt, "forecast": e.get("forecast", ""), "previous": e.get("previous", ""),
             })
     out.sort(key=lambda x: x["datetime"])
