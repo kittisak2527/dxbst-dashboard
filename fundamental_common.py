@@ -18,6 +18,8 @@ import requests
 import streamlit as st
 from datetime import datetime
 
+import common as C   # ใช้ helper เดิม (yf_daily) เพื่อให้ DXY ตรงกับหน้า Technical
+
 # ---------- config / keys ----------
 def _secret(name, default=""):
     """อ่านค่าจาก Streamlit secrets แบบปลอดภัย (ไม่ตั้งค่าก็ไม่พัง)"""
@@ -68,6 +70,19 @@ def fred_latest(series_id, n=10):
         return None
     (d0, v0), (_, v1) = vals[0], vals[1]
     return {"value": v0, "prev": v1, "change": v0 - v1, "date": d0, "series": series_id}
+
+
+@_safe
+@st.cache_data(ttl=1800, show_spinner=False)
+def dxy_ice():
+    """ดัชนีดอลลาร์ DXY (ICE) จาก yfinance DX-Y.NYB — ตัวเดียวกับหน้า Technical (~101)
+    คืน {value, prev, change}"""
+    df = C.yf_daily("DX-Y.NYB")
+    if df is None or len(df) < 2:
+        return None
+    closes = df["close"].tolist()
+    v0, v1 = closes[-1], closes[-2]
+    return {"value": v0, "prev": v1, "change": v0 - v1}
 
 
 # =============================================================
@@ -266,7 +281,7 @@ def gold_fundamental():
     """รวมทุกอย่างของทองคำ: macro + news + bias
     คืน dict: {real, dxy, be, ff, news, news_avg, bias, calendar}"""
     real = fred_latest("DFII10")     # 10Y real yield (TIPS) — ตัวขับเคลื่อนหลัก (ผกผันกับทอง)
-    dxy  = fred_latest("DTWEXBGS")   # ดัชนีดอลลาร์ broad (proxy ทิศทาง DXY)
+    dxy  = dxy_ice()                 # DXY มาตรฐาน (ICE) — ตรงกับหน้า Technical
     be   = fred_latest("T10YIE")     # breakeven inflation 10Y
     ff   = fred_latest("DFF")        # fed funds effective
     news = av_news(topics="economy_monetary,financial_markets")
@@ -299,7 +314,7 @@ def gold_fundamental():
 def btc_fundamental():
     """รวมทุกอย่างของ BTC: macro (risk-on) + fear&greed + news + bias
     คืน dict: {dxy, real, fg, dom, news, news_avg, bias, calendar}"""
-    dxy  = fred_latest("DTWEXBGS")
+    dxy  = dxy_ice()
     real = fred_latest("DFII10")     # ดอกเบี้ยจริง: ขึ้น=ลบต่อสินทรัพย์เสี่ยง
     fg   = fear_greed()
     dom  = btc_dominance()

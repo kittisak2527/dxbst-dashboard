@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 # =============================================================
-# gold_fund_page.py  —  หน้า "พื้นฐานทองคำ" (Fundamental)
-# แสดง 4 องค์ประกอบ: สรุป Bias / แผงมาโคร / ข่าว+sentiment / ปฏิทินเศรษฐกิจ
-# เรียกใช้ common (ธีม/การ์ด) + fundamental_common (ข้อมูล)
+# btc_fund_page.py  —  หน้า "พื้นฐาน BTC" (Fundamental)
+# โครงเดียวกับ gold_fund_page แต่ปัจจัยเป็นสาย risk-on:
+#   DXY / Real Yield / Fear & Greed / BTC Dominance + ข่าวคริปโต
 # =============================================================
 from datetime import datetime
 
@@ -21,9 +21,9 @@ def _bias_color(net):
     return GREEN if net > 0 else (RED if net < 0 else GOLD)
 
 
-# ---------- 1) สรุป Bias (หัวเรื่อง) ----------
+# ---------- 1) สรุป Bias ----------
 def render_bias(data):
-    st.header("🧭 ทิศทางพื้นฐานทองคำ (Fundamental Bias)")
+    st.header("🧭 ทิศทางพื้นฐาน BTC (Fundamental Bias)")
     bias = data["bias"]
     net = bias["net"]
     n = len(bias["votes"])
@@ -41,43 +41,40 @@ def render_bias(data):
         sig = "🟢 หนุน" if v["vote"] > 0 else ("🔴 กด" if v["vote"] < 0 else "⚪ กลาง")
         rows.append({"ปัจจัย": v["name"], "สัญญาณ": sig, "รายละเอียด": v["detail"]})
     st.table(C.pd.DataFrame(rows))
-    st.caption("Bias มาจากการโหวตของแต่ละปัจจัยรวมกัน — เป็น 'บริบทพื้นฐาน' ไว้จับทิศลม "
-               "ไม่ใช่สัญญาณเข้า/ออกระยะสั้น (นั่นคือหน้าที่ของสาย Technical)")
+    st.caption("BTC เป็นสินทรัพย์เสี่ยง (risk-on) — ดอลลาร์อ่อน/ดอกเบี้ยลด/ตลาดโลภ = หนุน • "
+               "เป็นบริบทพื้นฐาน ไม่ใช่สัญญาณเข้า/ออก (นั่นคือหน้าที่ของสาย Technical)")
 
 
 # ---------- 2) แผงมาโคร ----------
 def render_macro(data):
-    st.header("📊 แผงมาโคร (ตัวขับเคลื่อนทองคำ)")
-    real, dxy, be, ff = data["real"], data["dxy"], data["be"], data["ff"]
-    if not any([real, dxy, be, ff]):
-        st.info("ยังดึงมาโครไม่ได้ — ต้องตั้ง FRED_API_KEY ใน Streamlit Secrets ก่อน "
-                "(ที่มา: FRED / ธนาคารกลางสหรัฐฯ)")
+    st.header("📊 แผงมาโคร (ตัวขับเคลื่อน BTC)")
+    dxy, real, fg, dom = data["dxy"], data["real"], data["fg"], data["dom"]
+    if not any([dxy, real, fg, dom]):
+        st.info("ยังดึงมาโครไม่ได้ — ตรวจ FRED_API_KEY ใน Secrets (Fear & Greed / Dominance ไม่ต้องใช้ key)")
         return
     c = st.columns(4)
-    if real:
-        c[0].metric("Real Yield 10Y (TIPS)", f"{real['value']:.2f}%",
-                    f"{real['change']:+.2f}", delta_color="off")
     if dxy:
-        c[1].metric("ดัชนีดอลลาร์ (DXY)", f"{dxy['value']:.2f}",
+        c[0].metric("ดัชนีดอลลาร์ (DXY)", f"{dxy['value']:.2f}",
                     f"{dxy['change']:+.2f}", delta_color="off")
-    if be:
-        c[2].metric("Breakeven Inflation 10Y", f"{be['value']:.2f}%",
-                    f"{be['change']:+.2f}", delta_color="off")
-    if ff:
-        c[3].metric("Fed Funds (effective)", f"{ff['value']:.2f}%",
-                    f"{ff['change']:+.2f}", delta_color="off")
-    st.caption("🔑 กติกาทองคำ: Real Yield ลง = บวกต่อทอง (ต้นทุนถือทองต่ำลง) • ดอลลาร์อ่อน = บวก • "
-               "เงินเฟ้อคาดการณ์ขึ้น = บวก (ทองเป็นสินทรัพย์กันเงินเฟ้อ)")
+    if real:
+        c[1].metric("Real Yield 10Y", f"{real['value']:.2f}%",
+                    f"{real['change']:+.2f}", delta_color="off")
+    if fg:
+        c[2].metric("Fear & Greed", f"{fg['value']} · {fg['class']}",
+                    f"{fg['value'] - fg['prev']:+d}", delta_color="off")
+    if dom:
+        c[3].metric("BTC Dominance", f"{dom['dominance']:.1f}%")
+    st.caption("🔑 กติกา BTC: ดอลลาร์อ่อน = risk-on = บวก • ดอกเบี้ยจริงลด = บวก • "
+               "Fear & Greed >55 (โลภ) = โมเมนตัมบวก, <45 (กลัว) = ลบ • Dominance สูง = เงินไหลเข้า BTC มากกว่า alt")
 
 
 # ---------- 3) ข่าว + sentiment ----------
 def render_news(data):
-    st.header("📰 ข่าว + ทิศทาง (Sentiment)")
+    st.header("📰 ข่าวคริปโต + ทิศทาง (Sentiment)")
     news = data["news"] or {}
     items = news.get("items", [])
     note = news.get("note")
     if not items:
-        # โชว์เหตุผลจริงจาก Alpha Vantage เพื่อ debug (เช่น ข้อความ rate limit)
         st.info(f"ยังไม่มีข่าวในรอบนี้ — เหตุผลจาก Alpha Vantage: {note}"
                 if note else "รอบนี้ยังไม่มีข่าว — ลองรีเฟรชอีกครั้ง")
         return
@@ -99,7 +96,7 @@ def render_news(data):
 
 # ---------- 4) ปฏิทินเศรษฐกิจ ----------
 def render_calendar(data):
-    st.header("🗓️ ปฏิทินเศรษฐกิจ (USD • สัปดาห์นี้–หน้า)")
+    st.header("🗓️ ปฏิทินเศรษฐกิจ (USD • มีผลต่อ BTC ผ่าน risk sentiment)")
     cal = data["calendar"]
     if cal is None:
         st.info("ยังดึงปฏิทินไม่ได้ (feed ไม่ตอบ) — ลองรีเฟรชอีกครั้ง (ที่มา: Forex Factory)")
@@ -108,7 +105,7 @@ def render_calendar(data):
         st.info("feed โหลดได้ แต่ยังไม่มี event USD ระดับกลาง–สูงในกรอบเวลานี้")
         return
     upcoming = [e for e in cal if F.countdown_str(e["datetime"]) != "ผ่านไปแล้ว"]
-    show = upcoming if upcoming else cal[-6:]   # ไม่มีอนาคต -> โชว์ที่ผ่านมาล่าสุดไว้ยืนยันว่า feed ทำงาน
+    show = upcoming if upcoming else cal[-6:]
     if not upcoming:
         st.caption(f"ยังไม่มี event ล่วงหน้าในกรอบนี้ — แสดง {len(show)} รายการล่าสุดที่ผ่านมาแทน "
                    f"(feed มีทั้งหมด {len(cal)} รายการ)")
@@ -124,10 +121,10 @@ def render_calendar(data):
             "ครั้งก่อน": e["previous"] or "—",
         })
     st.table(C.pd.DataFrame(rows))
-    st.caption("event สีแดง (FOMC/CPI/NFP) มักทำให้ทองผันผวนแรง — เลี่ยงเปิดสถานะใหม่ช่วงก่อน/หลังประกาศ")
+    st.caption("FOMC/CPI แรงๆ ทำตลาด risk ผันผวน กระทบ BTC โดยตรง — เลี่ยงเปิดสถานะช่วงก่อน/หลังประกาศ")
 
 
-# ---------- page-level safe wrapper (ล้อของสาย technical) ----------
+# ---------- page-level safe wrapper ----------
 def _safe(fn, data, label):
     try:
         fn(data)
@@ -137,7 +134,7 @@ def _safe(fn, data, label):
 
 @st.fragment(run_every=REFRESH_SECONDS)
 def body():
-    st.title("พื้นฐานทองคำ • Gold Fundamental")
+    st.title("พื้นฐาน BTC • Bitcoin Fundamental")
     st.caption(f"อัปเดต {datetime.now().strftime('%H:%M:%S')} • สรุปข่าว + มาโคร + ทิศทางพื้นฐาน • "
                "รีเฟรชอัตโนมัติทุก 30 นาที")
 
@@ -148,10 +145,9 @@ def body():
         if not F.AV_KEY:
             miss.append("ALPHAVANTAGE_API_KEY (ข่าว)")
         st.info("ℹ️ ยังไม่ได้ตั้ง key: " + " • ".join(miss) +
-                " — ส่วนที่ไม่ต้องใช้ key (ปฏิทินเศรษฐกิจ) ยังทำงานปกติ "
-                "ตั้ง key ได้ที่ Streamlit → Settings → Secrets")
+                " — ส่วนที่ไม่ต้องใช้ key (Fear & Greed / Dominance / ปฏิทิน) ยังทำงานปกติ")
 
-    data = F.gold_fundamental()
+    data = F.btc_fundamental()
     _safe(render_bias, data, "สรุป Bias")
     st.divider(); _safe(render_macro, data, "แผงมาโคร")
     st.divider(); _safe(render_news, data, "ข่าว")

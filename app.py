@@ -11,6 +11,7 @@ pages = {
     ],
     "📰 Fundamental": [
         st.Page("gold_fund_page.py", title="พื้นฐานทองคำ", icon="🥇"),
+        st.Page("btc_fund_page.py", title="พื้นฐาน BTC", icon="💰"),
     ],
 }
 st.navigation(pages).run()
