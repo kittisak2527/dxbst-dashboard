@@ -74,22 +74,29 @@ def fred_latest(series_id, n=10):
 # 2) ข่าว + sentiment — Alpha Vantage NEWS_SENTIMENT
 #    NOTE: free tier = 25 req/วัน -> ตั้ง cache 3 ชม. (สูงสุด ~8 รอบ/วัน/คิวรี)
 # =============================================================
-@_safe
 @st.cache_data(ttl=3 * 3600, show_spinner=False)
-def av_news(tickers=None, topics=None, limit=12):
-    """คืน list ของข่าว: [{title, url, source, time, score, label}, ...]
-    tickers เช่น 'CRYPTO:BTC' | topics เช่น 'economy_monetary,financial_markets'"""
-    if not AV_KEY:
-        return None
-    params = {"function": "NEWS_SENTIMENT", "apikey": AV_KEY, "limit": limit, "sort": "LATEST"}
-    if tickers:
-        params["tickers"] = tickers
-    if topics:
-        params["topics"] = topics
-    r = requests.get("https://www.alphavantage.co/query", params=params, headers=UA, timeout=TIMEOUT)
-    feed = r.json().get("feed")
-    if not feed:          # โดน rate limit จะได้ key 'Information'/'Note' แทน feed
-        return None
+def _av_news_cached(tickers, topics, limit):
+    """เรียก Alpha Vantage จริง — คืน dict {items, note} เสมอ (ไม่คืน None)
+    note = เหตุผลจริงถ้าไม่มีข่าว (เช่น ข้อความ rate limit) เพื่อ debug ได้"""
+    try:
+        params = {"function": "NEWS_SENTIMENT", "apikey": AV_KEY, "limit": limit, "sort": "LATEST"}
+        if tickers:
+            params["tickers"] = tickers
+        if topics:
+            params["topics"] = topics
+        r = requests.get("https://www.alphavantage.co/query", params=params,
+                         headers=UA, timeout=TIMEOUT)
+        j = r.json()
+    except Exception as e:
+        return {"items": [], "note": f"เชื่อมต่อ Alpha Vantage ไม่ได้ ({type(e).__name__})"}
+
+    feed = j.get("feed")
+    if not feed:
+        # ไม่มี feed = มักได้ข้อความ Information/Note/Error แทน -> ดึงมาโชว์
+        note = (j.get("Information") or j.get("Note")
+                or j.get("Error Message") or "Alpha Vantage ไม่ส่งข่าวกลับมาในรอบนี้")
+        return {"items": [], "note": str(note)[:240]}
+
     items = []
     for a in feed[:limit]:
         items.append({
@@ -100,7 +107,15 @@ def av_news(tickers=None, topics=None, limit=12):
             "score":  float(a.get("overall_sentiment_score", 0) or 0),
             "label":  a.get("overall_sentiment_label", "Neutral"),
         })
-    return items
+    return {"items": items, "note": None}
+
+
+def av_news(tickers=None, topics=None, limit=12):
+    """คืน dict {items: [...], note: str|None}
+    tickers เช่น 'CRYPTO:BTC' | topics เช่น 'economy_monetary,financial_markets'"""
+    if not AV_KEY:
+        return {"items": [], "note": "ยังไม่ได้ตั้ง ALPHAVANTAGE_API_KEY"}
+    return _av_news_cached(tickers, topics, limit)
 
 
 def news_vote(items):
@@ -130,31 +145,38 @@ def fmt_news_time(t):
 @_safe
 @st.cache_data(ttl=3600, show_spinner=False)
 def econ_calendar(currencies=("USD", "EUR"), min_impact="Medium"):
-    """คืน list event เรียงตามเวลา:
+    """คืน list event (สัปดาห์นี้ + สัปดาห์หน้า) เรียงตามเวลา:
     [{title, currency, impact, datetime, forecast, previous}, ...]"""
-    r = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-                     headers=UA, timeout=TIMEOUT)
-    data = r.json()
+    urls = [
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+    ]
     rank  = {"Low": 0, "Medium": 1, "High": 2, "Holiday": 0}
     floor = rank.get(min_impact, 1)
-    out = []
-    for e in data:
-        cur = e.get("country", "")            # ff ใช้ field 'country' เป็นสกุลเงิน เช่น USD/EUR
-        imp = e.get("impact", "")
-        if cur not in currencies:
-            continue
-        if rank.get(imp, 0) < floor:
-            continue
+    out, seen = [], set()
+    for url in urls:
         try:
-            dt = datetime.fromisoformat(e.get("date"))   # เช่น 2026-07-14T12:30:00-04:00
+            data = requests.get(url, headers=UA, timeout=TIMEOUT).json()
         except Exception:
-            dt = None
-        if dt is None:
-            continue
-        out.append({
-            "title": e.get("title", ""), "currency": cur, "impact": imp,
-            "datetime": dt, "forecast": e.get("forecast", ""), "previous": e.get("previous", ""),
-        })
+            continue                          # สัปดาห์หน้าอาจยังไม่มี feed -> ข้ามไป
+        for e in data:
+            cur = e.get("country", "")        # ff ใช้ field 'country' เป็นสกุลเงิน เช่น USD/EUR
+            if cur not in currencies:
+                continue
+            if rank.get(e.get("impact", ""), 0) < floor:
+                continue
+            try:
+                dt = datetime.fromisoformat(e.get("date"))   # เช่น 2026-07-14T12:30:00-04:00
+            except Exception:
+                continue
+            key = (e.get("title", ""), e.get("date", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "title": e.get("title", ""), "currency": cur, "impact": e.get("impact", ""),
+                "datetime": dt, "forecast": e.get("forecast", ""), "previous": e.get("previous", ""),
+            })
     out.sort(key=lambda x: x["datetime"])
     return out
 
@@ -245,7 +267,8 @@ def gold_fundamental():
     be   = fred_latest("T10YIE")     # breakeven inflation 10Y
     ff   = fred_latest("DFF")        # fed funds effective
     news = av_news(topics="economy_monetary,financial_markets")
-    nv, navg = news_vote(news)
+    items = news.get("items", [])
+    nv, navg = news_vote(items)
 
     votes = []
     if real:
@@ -260,10 +283,9 @@ def gold_fundamental():
         votes.append({"name": "Breakeven Inflation 10Y",
                       "vote": _vote(be["change"] > 0, be["change"] < 0),
                       "detail": f"{be['value']:.2f}% (Δ {be['change']:+.2f}) — ขึ้น=บวกต่อทอง"})
-    if news is not None:
-        votes.append({"name": "Sentiment ข่าว",
-                      "vote": nv,
-                      "detail": f"เฉลี่ย {navg:+.2f}" if navg is not None else "ไม่มีข่าว"})
+    if items:
+        votes.append({"name": "Sentiment ข่าว", "vote": nv,
+                      "detail": f"เฉลี่ย {navg:+.2f} จาก {len(items)} ข่าว"})
 
     return {"real": real, "dxy": dxy, "be": be, "ff": ff,
             "news": news, "news_avg": navg,
@@ -279,7 +301,8 @@ def btc_fundamental():
     fg   = fear_greed()
     dom  = btc_dominance()
     news = av_news(tickers="CRYPTO:BTC")
-    nv, navg = news_vote(news)
+    items = news.get("items", [])
+    nv, navg = news_vote(items)
 
     votes = []
     if dxy:
@@ -294,10 +317,9 @@ def btc_fundamental():
         votes.append({"name": "Fear & Greed",
                       "vote": _vote(fg["value"] > 55, fg["value"] < 45),
                       "detail": f"{fg['value']} ({fg['class']}) — >55 โลภ=บวก, <45 กลัว=ลบ"})
-    if news is not None:
-        votes.append({"name": "Sentiment ข่าว",
-                      "vote": nv,
-                      "detail": f"เฉลี่ย {navg:+.2f}" if navg is not None else "ไม่มีข่าว"})
+    if items:
+        votes.append({"name": "Sentiment ข่าว", "vote": nv,
+                      "detail": f"เฉลี่ย {navg:+.2f} จาก {len(items)} ข่าว"})
 
     return {"dxy": dxy, "real": real, "fg": fg, "dom": dom,
             "news": news, "news_avg": navg,
