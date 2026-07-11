@@ -85,7 +85,7 @@ def render_news(data):
     if avg is not None:
         tone = "🟢 เอียงบวก" if avg >= 0.15 else ("🔴 เอียงลบ" if avg <= -0.15 else "⚪ เป็นกลาง")
         st.caption(f"อารมณ์ข่าวรวม: {tone} (คะแนนเฉลี่ย {avg:+.2f})")
-    for a in news[:8]:
+    for a in items[:8]:
         lab = a["label"]
         dot = "🟢" if "Bull" in lab else ("🔴" if "Bear" in lab else "⚪")
         t = F.fmt_news_time(a["time"])
@@ -99,21 +99,25 @@ def render_news(data):
 
 # ---------- 4) ปฏิทินเศรษฐกิจ ----------
 def render_calendar(data):
-    st.header("🗓️ ปฏิทินเศรษฐกิจ (USD • สัปดาห์นี้)")
+    st.header("🗓️ ปฏิทินเศรษฐกิจ (USD • สัปดาห์นี้–หน้า)")
     cal = data["calendar"]
     if cal is None:
-        st.info("ยังดึงปฏิทินไม่ได้ — ลองรีเฟรชอีกครั้ง (ที่มา: Forex Factory)")
+        st.info("ยังดึงปฏิทินไม่ได้ (feed ไม่ตอบ) — ลองรีเฟรชอีกครั้ง (ที่มา: Forex Factory)")
         return
-    upcoming = [e for e in cal if e["datetime"] and
-                F.countdown_str(e["datetime"]) != "ผ่านไปแล้ว"]
+    if not cal:
+        st.info("feed โหลดได้ แต่ยังไม่มี event USD ระดับกลาง–สูงในกรอบเวลานี้")
+        return
+    upcoming = [e for e in cal if F.countdown_str(e["datetime"]) != "ผ่านไปแล้ว"]
+    show = upcoming if upcoming else cal[-6:]   # ไม่มีอนาคต -> โชว์ที่ผ่านมาล่าสุดไว้ยืนยันว่า feed ทำงาน
     if not upcoming:
-        st.info("สัปดาห์นี้ไม่มี event ระดับกลาง–สูงของ USD ที่ยังไม่เกิด")
-        return
+        st.caption(f"ยังไม่มี event ล่วงหน้าในกรอบนี้ — แสดง {len(show)} รายการล่าสุดที่ผ่านมาแทน "
+                   f"(feed มีทั้งหมด {len(cal)} รายการ)")
     rows = []
-    for e in upcoming[:12]:
+    for e in show[:12]:
         imp = {"High": "🔴 สูง", "Medium": "🟠 กลาง"}.get(e["impact"], e["impact"])
+        cd = F.countdown_str(e["datetime"])
         rows.append({
-            "เวลา (เหลือ)": F.countdown_str(e["datetime"]),
+            "เวลา": cd if cd != "ผ่านไปแล้ว" else e["datetime"].strftime("%d/%m %H:%M"),
             "Event": e["title"],
             "แรง": imp,
             "คาด": e["forecast"] or "—",
