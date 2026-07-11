@@ -26,8 +26,8 @@ def _secret(name, default=""):
     except Exception:
         return default
 
-FRED_KEY = _secret("2dbc7b1dc8bfe46fe9585ef409a6f9d0")
-AV_KEY   = _secret("M7MNJGPT2SX3DBIK")
+FRED_KEY = _secret("FRED_API_KEY")
+AV_KEY   = _secret("ALPHAVANTAGE_API_KEY")
 
 UA      = {"User-Agent": "Mozilla/5.0 (dxbst-dashboard/fundamental)"}
 TIMEOUT = 12
