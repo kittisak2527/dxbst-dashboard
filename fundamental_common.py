@@ -16,7 +16,7 @@
 import functools
 import requests
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import common as C   # ใช้ helper เดิม (yf_daily) เพื่อให้ DXY ตรงกับหน้า Technical
 
@@ -90,8 +90,9 @@ def dxy_ice():
 #    NOTE: free tier = 25 req/วัน -> ตั้ง cache 3 ชม. (สูงสุด ~8 รอบ/วัน/คิวรี)
 # =============================================================
 @st.cache_data(ttl=3 * 3600, show_spinner=False)
-def _av_news_cached(tickers, topics, limit):
+def _av_news_cached(tickers, topics, limit, focus):
     """เรียก Alpha Vantage จริง — คืน dict {items, note} เสมอ (ไม่คืน None)
+    focus = ticker ที่อยากได้ sentiment เฉพาะตัว (เช่น 'GLD') แทนคะแนนรวมทั้งข่าว
     note = เหตุผลจริงถ้าไม่มีข่าว (เช่น ข้อความ rate limit) เพื่อ debug ได้"""
     try:
         params = {"function": "NEWS_SENTIMENT", "apikey": AV_KEY, "limit": limit, "sort": "LATEST"}
@@ -114,23 +115,34 @@ def _av_news_cached(tickers, topics, limit):
 
     items = []
     for a in feed[:limit]:
+        score = float(a.get("overall_sentiment_score", 0) or 0)
+        label = a.get("overall_sentiment_label", "Neutral")
+        if focus:                      # ใช้ sentiment เฉพาะของ ticker ที่โฟกัส (เจาะจงกว่า)
+            for ts in a.get("ticker_sentiment", []):
+                if ts.get("ticker") == focus:
+                    try:
+                        score = float(ts.get("ticker_sentiment_score", score) or score)
+                        label = ts.get("ticker_sentiment_label", label)
+                    except Exception:
+                        pass
+                    break
         items.append({
             "title":  a.get("title", ""),
             "url":    a.get("url", ""),
             "source": a.get("source", ""),
             "time":   a.get("time_published", ""),
-            "score":  float(a.get("overall_sentiment_score", 0) or 0),
-            "label":  a.get("overall_sentiment_label", "Neutral"),
+            "score":  score,
+            "label":  label,
         })
     return {"items": items, "note": None}
 
 
-def av_news(tickers=None, topics=None, limit=12):
+def av_news(tickers=None, topics=None, limit=12, focus=None):
     """คืน dict {items: [...], note: str|None}
-    tickers เช่น 'CRYPTO:BTC' | topics เช่น 'economy_monetary,financial_markets'"""
+    tickers เช่น 'GLD' | 'CRYPTO:BTC' • focus = ดึง sentiment เฉพาะ ticker นั้น"""
     if not AV_KEY:
         return {"items": [], "note": "ยังไม่ได้ตั้ง ALPHAVANTAGE_API_KEY"}
-    return _av_news_cached(tickers, topics, limit)
+    return _av_news_cached(tickers, topics, limit, focus)
 
 
 def news_vote(items):
@@ -157,10 +169,33 @@ def fmt_news_time(t):
 # =============================================================
 # 3) ปฏิทินเศรษฐกิจ — Forex Factory (ฟรี ไม่ต้อง key)
 # =============================================================
+def _curated_events():
+    """event หลักที่รู้วันแน่นอน (จาก Fed/BLS) — ทำให้มองล่วงหน้าได้เสมอ
+    แม้ feed สัปดาห์หน้าของ Forex Factory จะไม่ตอบ
+    หมายเหตุ: อัปเดตวัน FOMC/CPI ปีถัดไปได้ที่นี่ (NFP คำนวณอัตโนมัติ = ศุกร์แรกของเดือน)"""
+    ET = timezone(timedelta(hours=-4))        # EDT (ฤดูร้อนสหรัฐฯ)
+    fixed = [
+        ("US CPI (m/m)",       datetime(2026, 7, 14,  8, 30, tzinfo=ET), "High"),
+        ("FOMC Rate Decision", datetime(2026, 7, 29, 14,  0, tzinfo=ET), "High"),
+    ]
+    ev = list(fixed)
+    # NFP = ศุกร์แรกของเดือน 08:30 ET — คำนวณ 3 เดือนข้างหน้า
+    base = datetime.now(ET)
+    for madd in range(0, 3):
+        y = base.year + (base.month - 1 + madd) // 12
+        m = (base.month - 1 + madd) % 12 + 1
+        d = datetime(y, m, 1, 8, 30, tzinfo=ET)
+        while d.weekday() != 4:               # 4 = ศุกร์
+            d += timedelta(days=1)
+        ev.append(("US Non-Farm Payrolls (NFP)", d, "High"))
+    return [{"title": t, "currency": "USD", "impact": i, "datetime": dt,
+             "forecast": "", "previous": ""} for (t, dt, i) in ev]
+
+
 @_safe
 @st.cache_data(ttl=3600, show_spinner=False)
 def econ_calendar(currencies=("USD", "EUR"), min_impact="Medium"):
-    """คืน list event (สัปดาห์นี้ + สัปดาห์หน้า) เรียงตามเวลา:
+    """คืน list event (feed สัปดาห์นี้–หน้า + curated ล่วงหน้า) เรียงตามเวลา:
     [{title, currency, impact, datetime, forecast, previous}, ...]"""
     urls = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
@@ -169,32 +204,49 @@ def econ_calendar(currencies=("USD", "EUR"), min_impact="Medium"):
     rank  = {"Low": 0, "Medium": 1, "High": 2, "Holiday": 0}
     floor = rank.get(min_impact, 1)
     out, seen = [], set()
+
+    def _key(dt, cur):
+        # ยุบซ้ำด้วย 'ชั่วโมง UTC + สกุลเงิน' -> ถ้า feed กับ curated ชนวันเวลาเดียวกันเก็บอันเดียว
+        return (dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H"), cur)
+
+    # 1) จาก Forex Factory feed (มี forecast/previous จริง -> ใส่ก่อน ให้ชนะ curated)
     for url in urls:
         try:
             data = requests.get(url, headers=UA, timeout=TIMEOUT).json()
         except Exception:
             continue                          # สัปดาห์หน้าอาจยังไม่มี feed -> ข้ามไป
         if not isinstance(data, list):
-            continue                          # กัน feed คืน error page/dict แทน list
+            continue
         for e in data:
-            cur = e.get("country", "")        # ff ใช้ field 'country' เป็นสกุลเงิน เช่น USD/EUR
+            cur = e.get("country", "")
             if cur not in currencies:
                 continue
-            imp = str(e.get("impact", "")).strip().capitalize()   # กันตัวพิมพ์เล็ก/ใหญ่ไม่ตรง
+            imp = str(e.get("impact", "")).strip().capitalize()
             if rank.get(imp, 0) < floor:
                 continue
             try:
-                dt = datetime.fromisoformat(e.get("date"))   # เช่น 2026-07-14T12:30:00-04:00
+                dt = datetime.fromisoformat(e.get("date"))
             except Exception:
                 continue
-            key = (e.get("title", ""), e.get("date", ""))
-            if key in seen:
+            k = _key(dt, cur)
+            if k in seen:
                 continue
-            seen.add(key)
+            seen.add(k)
             out.append({
                 "title": e.get("title", ""), "currency": cur, "impact": imp,
                 "datetime": dt, "forecast": e.get("forecast", ""), "previous": e.get("previous", ""),
             })
+
+    # 2) เติม curated (เฉพาะที่ยังไม่ชนกับ feed) -> มองล่วงหน้าไกลได้เสมอ
+    for e in _curated_events():
+        if e["currency"] not in currencies:
+            continue
+        k = _key(e["datetime"], e["currency"])
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+
     out.sort(key=lambda x: x["datetime"])
     return out
 
@@ -255,6 +307,16 @@ def _vote(cond_bull, cond_bear):
     return 0
 
 
+def _vote_band(change, up_is_bull, band):
+    """โหวตแบบมี deadband: ถ้า |change| <= band -> 0 (นิ่ง ไม่ไหวตามน้อยส์)
+    up_is_bull=True  -> ขึ้น=บวก / ลง=ลบ
+    up_is_bull=False -> ลง=บวก / ขึ้น=ลบ (เช่น DXY, Real Yield ต่อทอง)"""
+    if change is None or abs(change) <= band:
+        return 0
+    rising = change > 0
+    return (1 if rising else -1) if up_is_bull else (-1 if rising else 1)
+
+
 def bias_from_votes(votes):
     """votes: list ของ dict {name, vote(-1/0/+1), detail}
     คืน dict สรุปทิศทางรวม: net, score(0-100), label(TH), emoji, votes"""
@@ -284,22 +346,22 @@ def gold_fundamental():
     dxy  = dxy_ice()                 # DXY มาตรฐาน (ICE) — ตรงกับหน้า Technical
     be   = fred_latest("T10YIE")     # breakeven inflation 10Y
     ff   = fred_latest("DFF")        # fed funds effective
-    news = av_news(topics="economy_monetary,financial_markets")
+    news = av_news(tickers="GLD", focus="GLD")   # ข่าวเจาะจงทอง (ETF GLD) + sentiment เฉพาะ GLD
     items = news.get("items", [])
     nv, navg = news_vote(items)
 
     votes = []
     if real:
         votes.append({"name": "Real Yield 10Y (TIPS)",
-                      "vote": _vote(real["change"] < 0, real["change"] > 0),
+                      "vote": _vote_band(real["change"], up_is_bull=False, band=0.02),
                       "detail": f"{real['value']:.2f}% (Δ {real['change']:+.2f}) — ลง=บวกต่อทอง"})
     if dxy:
         votes.append({"name": "ดัชนีดอลลาร์ (DXY)",
-                      "vote": _vote(dxy["change"] < 0, dxy["change"] > 0),
+                      "vote": _vote_band(dxy["change"], up_is_bull=False, band=0.10),
                       "detail": f"{dxy['value']:.2f} (Δ {dxy['change']:+.2f}) — ลง=บวกต่อทอง"})
     if be:
         votes.append({"name": "Breakeven Inflation 10Y",
-                      "vote": _vote(be["change"] > 0, be["change"] < 0),
+                      "vote": _vote_band(be["change"], up_is_bull=True, band=0.02),
                       "detail": f"{be['value']:.2f}% (Δ {be['change']:+.2f}) — ขึ้น=บวกต่อทอง"})
     if items:
         votes.append({"name": "Sentiment ข่าว", "vote": nv,
@@ -318,18 +380,18 @@ def btc_fundamental():
     real = fred_latest("DFII10")     # ดอกเบี้ยจริง: ขึ้น=ลบต่อสินทรัพย์เสี่ยง
     fg   = fear_greed()
     dom  = btc_dominance()
-    news = av_news(tickers="CRYPTO:BTC")
+    news = av_news(tickers="CRYPTO:BTC", focus="CRYPTO:BTC")   # sentiment เฉพาะ BTC
     items = news.get("items", [])
     nv, navg = news_vote(items)
 
     votes = []
     if dxy:
         votes.append({"name": "ดัชนีดอลลาร์ (DXY)",
-                      "vote": _vote(dxy["change"] < 0, dxy["change"] > 0),
+                      "vote": _vote_band(dxy["change"], up_is_bull=False, band=0.10),
                       "detail": f"{dxy['value']:.2f} (Δ {dxy['change']:+.2f}) — ลง=risk-on=บวก"})
     if real:
         votes.append({"name": "Real Yield 10Y",
-                      "vote": _vote(real["change"] < 0, real["change"] > 0),
+                      "vote": _vote_band(real["change"], up_is_bull=False, band=0.02),
                       "detail": f"{real['value']:.2f}% (Δ {real['change']:+.2f}) — ลง=บวกต่อสินทรัพย์เสี่ยง"})
     if fg:
         votes.append({"name": "Fear & Greed",
