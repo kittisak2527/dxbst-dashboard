@@ -347,3 +347,46 @@ def zone_note_and_quality(price, above, below, levels):
             if abs(w["v"] - p["v"]) / price < 0.003:
                 quality.append(f'{w["name"]} ≈ {p["name"]} (~{(w["v"]+p["v"])/2:,.0f})')
     return fired, quality
+
+
+def fakeout_read(price, levels, net_gex, flip):
+    """ประเมินแนวโน้ม 'เด้งหรือทะลุ' (fake-out) ต่อแต่ละเส้น จาก Gamma regime
+    price   : ราคาปัจจุบัน
+    levels  : [{name, v}, ...] เส้นทั้งหมด (wall/pivot/flip)
+    net_gex : ค่า Net GEX รวม (>=0 = Positive)
+    flip    : ราคา Gamma Flip (หรือ None)
+    คืน (summary_text, rows) โดย rows เรียงจากเส้นที่ใกล้ราคาสุด:
+      [{name, v, dist, side, verdict, emoji}, ...]
+
+    หลักคิด: เหนือ Gamma Flip / Positive GEX = dealer หน่วง -> เส้นมักเด้ง, ทะลุมักหลอก
+             ใต้ Gamma Flip / Negative GEX = dealer เร่ง -> เส้นมักถูกทะลุจริง, สวนอันตราย"""
+    # ตัดสิน 'โหมด' หลักจากตำแหน่งเทียบ Flip ก่อน (ตรงกว่า) ถ้าไม่มี flip ใช้เครื่องหมาย Net GEX
+    if flip is not None:
+        dampen = price >= flip
+    else:
+        dampen = (net_gex is not None) and (net_gex >= 0)
+
+    rows = []
+    for lv in sorted(levels, key=lambda x: abs(x["v"] - price)):
+        v = lv["v"]
+        if not price:
+            continue
+        dist = (v - price) / price * 100.0
+        side = "ต้าน ↑" if v > price else ("รับ ↓" if v < price else "ที่ราคา")
+        name = str(lv["name"])
+        if "Flip" in name:
+            verdict, emoji = "จุดสลับโหมด — เหนือ=หน่วง(เด้ง) / ใต้=เร่ง(ทะลุ)", "🔀"
+        elif dampen:
+            verdict, emoji = "มักเด้ง — ทะลุมักหลอก (รอแท่งปิดยืนยัน)", "🟢"
+        else:
+            verdict, emoji = "มักทะลุจริง — สวนอันตราย (ตามโมเมนตัม)", "🔴"
+        rows.append({"name": name, "v": v, "dist": dist,
+                     "side": side, "verdict": verdict, "emoji": emoji})
+
+    if dampen:
+        summary = ("โหมดหน่วง (Positive GEX / เหนือ Flip) → เส้นมักเด้ง การทะลุมักเป็นของปลอม "
+                   "• กลยุทธ์: 'รอยืนยันก่อนตาม' เล่นเด้งในกรอบได้ ระวังไล่ทะลุ")
+    else:
+        summary = ("โหมดเร่ง (Negative GEX / ใต้ Flip) → เส้นมักถูกทะลุจริง โมเมนตัมแรง "
+                   "• กลยุทธ์: 'ตามโมเมนตัม' การสวนกลับอันตราย")
+    return summary, rows
