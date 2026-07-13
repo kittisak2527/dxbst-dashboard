@@ -257,14 +257,18 @@ def aligned_mult(under_df, etf_df):
 
 
 def pine_mode_label(dampen):
-    """คืนบรรทัด label PineScript บอกโหมดตลาด (fake-out) — วางใน if barstate.islast
-    dampen=True = หน่วง(เด้ง) • False = เร่ง(ทะลุ)"""
+    """คืนโค้ด PineScript แสดง 'โหมดตลาด (fake-out)' เป็นตารางมุมขวาบน (ติดตายกับจอ เห็นชัด ไม่หลุดจอ)
+    dampen=True = หน่วง(เด้ง) • False = เร่ง(ทะลุ) — วางเป็นบล็อกท็อปเลเวล (ไม่เยื้อง)"""
     if dampen:
-        txt, col = "🟢 โหมด: หน่วง — เส้นมักเด้ง / ทะลุมักหลอก", "color.new(color.green, 20)"
+        txt, bg = "🟢 โหมด: หน่วง (เส้นมักเด้ง • ทะลุมักหลอก)", "color.new(color.green, 15)"
     else:
-        txt, col = "🔴 โหมด: เร่ง — เส้นมักทะลุจริง / สวนอันตราย", "color.new(color.red, 20)"
-    return (f'    label.new(bar_index + 2, high, "{txt}", yloc=yloc.abovebar, '
-            f'style=label.style_label_down, color={col}, textcolor=color.white, size=size.normal)')
+        txt, bg = "🔴 โหมด: เร่ง (เส้นมักทะลุจริง • สวนอันตราย)", "color.new(color.red, 15)"
+    return "\n".join([
+        'var table _modeTbl = table.new(position.top_right, 1, 1, border_width=1)',
+        "if barstate.islast",
+        f'    table.cell(_modeTbl, 0, 0, "{txt}", bgcolor={bg}, '
+        "text_color=color.white, text_size=size.normal)",
+    ])
 
 
 def pine_alerts(levels, dampen=None):
