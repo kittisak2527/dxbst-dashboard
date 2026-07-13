@@ -309,8 +309,9 @@ def apply_theme():
 html,body,[class*="css"],.stApp,[data-testid="stAppViewContainer"]{font-family:'IBM Plex Sans Thai',sans-serif!important;}
 .stApp,[data-testid="stAppViewContainer"]{
   background:radial-gradient(1100px 550px at 18% -12%, #16223f 0%, #0b1220 58%)!important;color:var(--txt);}
-[data-testid="stHeader"]{background:transparent;}
-#MainMenu,footer,[data-testid="stToolbar"]{visibility:hidden;display:none;}
+[data-testid="stHeader"]{background:transparent;visibility:visible!important;}
+[data-testid="stTopNav"]{visibility:visible!important;display:flex!important;}
+#MainMenu,footer{visibility:hidden;display:none;}
 [data-testid="stSidebar"]{background:#0d1526!important;border-right:1px solid var(--line);}
 [data-testid="stSidebarNav"] a span{color:var(--txt)!important;}
 h1{color:var(--gold)!important;font-weight:700!important;letter-spacing:.3px;}
