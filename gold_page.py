@@ -473,6 +473,57 @@ def render_gex():
             "GLD เป็น proxy ของทอง (แม่นน้อยกว่า BTC/Deribit) — ใช้เป็นบริบท ไม่ใช่สัญญาณ")
 
 
+def render_fakeout():
+    st.header("🎣 ตัวกรอง Fake-out — เส้นนี้ 'เด้ง' หรือ 'ทะลุ'")
+    q = gold_quote(primary)
+    gx = gld_gex(0.20)
+    if not q or not gx:
+        st.info("ยังประเมิน fake-out ไม่ได้ (ต้องมีทั้งราคา + GEX) — ลองรีเฟรช"); return
+    price = q["price"]
+
+    levels = []
+    rh = gold_pivot_ref(primary)
+    if rh:
+        dp = C.classic_pivot(rh["high"], rh["low"], rh["close"])
+        nm = {"R2": "Pivot R2", "R1": "Pivot R1", "PP": "Pivot กลาง", "S1": "Pivot S1", "S2": "Pivot S2"}
+        for k in ["R2", "R1", "PP", "S1", "S2"]:
+            if k in dp:
+                levels.append({"name": nm[k], "v": dp[k]})
+    opt = gld_snapshot(); am = gold_mult()
+    if opt and not opt["anomalous"] and am:
+        mult = am["mult"]
+        levels.append({"name": "Call Wall", "v": opt["callWall"] * mult})
+        levels.append({"name": "Put Wall", "v": opt["putWall"] * mult})
+        if opt["maxPain"]:
+            levels.append({"name": "Max Pain", "v": opt["maxPain"] * mult})
+    levels.append({"name": "GEX Call Wall", "v": gx["call_wall"]})
+    levels.append({"name": "GEX Put Wall", "v": gx["put_wall"]})
+    if gx.get("flip"):
+        levels.append({"name": "Gamma Flip", "v": gx["flip"]})
+
+    summary, rows = C.fakeout_read(price, levels, gx["total"], gx.get("flip"))
+    dampen = (price >= gx["flip"]) if gx.get("flip") else (gx["total"] >= 0)
+    C.hero_cards([
+        ("โหมดตลาด (จาก GEX)",
+         "🟢 หน่วง (เด้ง)" if dampen else "🔴 เร่ง (ทะลุ)",
+         "Positive GEX / เหนือ Flip" if dampen else "Negative GEX / ใต้ Flip",
+         "#38c172" if dampen else "#e3506a"),
+    ])
+    st.info("🎣 " + summary)
+    df_rows = []
+    for r in rows[:7]:                       # โชว์ 7 เส้นที่ใกล้ราคาสุด
+        df_rows.append({
+            "เส้น": r["name"],
+            "ราคา": f"{r['v']:,.2f}",
+            "ระยะ": f"{r['dist']:+.2f}%",
+            "ฝั่ง": r["side"],
+            "แนวโน้มเมื่อราคาถึงเส้น": f"{r['emoji']} {r['verdict']}",
+        })
+    st.table(C.pd.DataFrame(df_rows))
+    st.caption("อ่านคู่กับ 'เรดาร์โซน' • ราคามักแทงเลยเส้นนิดเพื่อกวาด SL ก่อนเด้ง → อย่าวาง SL ชิดเส้น "
+               "วางเผื่อ buffer • ยืนยันด้วยแท่งปิด ไม่ใช่ไส้แทง • เครื่องมือช่วยคิด ไม่ใช่คำแนะนำ")
+
+
 def render_pinescript():
     st.header("📋 PineScript — เส้น + แจ้งเตือน บนกราฟทอง (ข้อมูลจริง)")
     opt = gld_snapshot()
@@ -559,6 +610,7 @@ def body():
     st.divider(); _safe(render_pivots, "Pivot")
     st.divider(); _safe(render_options, "Options")
     st.divider(); _safe(render_gex, "GEX")
+    st.divider(); _safe(render_fakeout, "Fake-out")
     st.divider(); _safe(render_pinescript, "PineScript")
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
