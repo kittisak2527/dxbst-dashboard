@@ -511,7 +511,7 @@ def render_fakeout():
     ])
     st.info("🎣 " + summary)
     df_rows = []
-    for r in rows[:7]:                       # โชว์ 7 เส้นที่ใกล้ราคาสุด
+    for r in rows:                          # fakeout_read คัดให้แล้ว (wall เสมอ + pivot ใกล้สุด)
         df_rows.append({
             "เส้น": r["name"],
             "ราคา": f"{r['v']:,.2f}",
@@ -548,6 +548,9 @@ def render_pinescript():
         walls.append((gx["put_wall"], "GEX Put Wall", "color.aqua", "hline.style_solid", 1))
         if gx.get("flip"):
             walls.append((gx["flip"], "Gamma Flip", "color.fuchsia", "hline.style_solid", 2))
+    dampen = None
+    if gx:
+        dampen = (q["price"] >= gx["flip"]) if gx.get("flip") else (gx.get("total", 0) >= 0)
     rh = gold_pivot_ref(primary)
     piv = C.classic_pivot(rh["high"], rh["low"], rh["close"]) if rh else None
 
@@ -569,6 +572,8 @@ def render_pinescript():
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
     lines.append("if barstate.islast")
+    if dampen is not None:
+        lines.append(C.pine_mode_label(dampen))
     for v, t, c, s, w in walls:
         lt = f"{t} {v:.0f}"
         if t == "Max Pain" and dte is not None:
@@ -583,7 +588,7 @@ def render_pinescript():
                          f'style=label.style_label_right, color=color.new(color.gray, 80), '
                          f'textcolor=color.white, size=size.tiny)')
     lines.append("")
-    lines += C.pine_alerts(alert_levels)
+    lines += C.pine_alerts(alert_levels, dampen)
     st.code("\n".join(lines), language="pine")
     st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • มีป้ายชื่อกำกับแต่ละเส้น (ยื่นไปขวา ไม่ทับเทียน) • "
                "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
