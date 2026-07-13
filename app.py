@@ -1,7 +1,7 @@
 import streamlit as st
 
 st.set_page_config(page_title="เลขาตลาด • ทอง / BTC / EUR", layout="wide",
-                   initial_sidebar_state="auto")
+                   initial_sidebar_state="collapsed")
 
 pages = {
     "📊 Technical": [
@@ -14,4 +14,4 @@ pages = {
         st.Page("btc_fund_page.py", title="พื้นฐาน BTC", icon="🪙"),
     ],
 }
-st.navigation(pages).run()
+st.navigation(pages, position="top").run()
