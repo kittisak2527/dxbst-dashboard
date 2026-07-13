@@ -256,9 +256,27 @@ def aligned_mult(under_df, etf_df):
     return {"mult": uc / ec, "date": d, "under": uc, "etf": ec, "stale_days": stale_days}
 
 
-def pine_alerts(levels):
+def pine_mode_label(dampen):
+    """คืนบรรทัด label PineScript บอกโหมดตลาด (fake-out) — วางใน if barstate.islast
+    dampen=True = หน่วง(เด้ง) • False = เร่ง(ทะลุ)"""
+    if dampen:
+        txt, col = "🟢 โหมด: หน่วง — เส้นมักเด้ง / ทะลุมักหลอก", "color.new(color.green, 20)"
+    else:
+        txt, col = "🔴 โหมด: เร่ง — เส้นมักทะลุจริง / สวนอันตราย", "color.new(color.red, 20)"
+    return (f'    label.new(bar_index + 2, high, "{txt}", yloc=yloc.abovebar, '
+            f'style=label.style_label_down, color={col}, textcolor=color.white, size=size.normal)')
+
+
+def pine_alerts(levels, dampen=None):
     """สร้างโค้ด PineScript alert (near-entry / break up / break down) ต่อ level
-    levels: list ของ (name, value)"""
+    levels: list ของ (name, value)
+    dampen: True=โหมดหน่วง, False=โหมดเร่ง, None=ไม่ใส่บริบท — เติมคำเตือนตามโหมดในข้อความ alert"""
+    if dampen is True:
+        c_near, c_brk = " • โหมดหน่วง→มักเด้ง อย่าไล่", " • โหมดหน่วง→ระวังทะลุหลอก รอแท่งปิด"
+    elif dampen is False:
+        c_near, c_brk = " • โหมดเร่ง→ระวังทะลุ", " • โหมดเร่ง→มักทะลุจริง ตามโมเมนตัม"
+    else:
+        c_near = c_brk = ""
     out = ["", "// ===== ALERTS: สร้าง alert แบบ 'Any alert() function call' =====",
            'nearPct = input.float(0.25, "ระยะเตือนใกล้โซน %", minval=0.05, step=0.05) / 100',
            'alertsOn = input.bool(true, "เปิดแจ้งเตือน")', ""]
@@ -270,11 +288,11 @@ def pine_alerts(levels):
             f"_xu{i} = ta.crossover(close, {lv})",
             f"_xd{i} = ta.crossunder(close, {lv})",
             f"if alertsOn and _near{i} and not _prev{i}",
-            f'    alert("⚡ ราคาเข้าใกล้ {name} {lv}", alert.freq_once_per_bar)',
+            f'    alert("⚡ ราคาเข้าใกล้ {name} {lv}{c_near}", alert.freq_once_per_bar)',
             f"if alertsOn and _xu{i}",
-            f'    alert("⬆️ เบรกขึ้นผ่าน {name} {lv}", alert.freq_once_per_bar)',
+            f'    alert("⬆️ เบรกขึ้นผ่าน {name} {lv}{c_brk}", alert.freq_once_per_bar)',
             f"if alertsOn and _xd{i}",
-            f'    alert("⬇️ เบรกลงผ่าน {name} {lv}", alert.freq_once_per_bar)',
+            f'    alert("⬇️ เบรกลงผ่าน {name} {lv}{c_brk}", alert.freq_once_per_bar)',
             "",
         ]
     return out
@@ -349,12 +367,13 @@ def zone_note_and_quality(price, above, below, levels):
     return fired, quality
 
 
-def fakeout_read(price, levels, net_gex, flip):
+def fakeout_read(price, levels, net_gex, flip, max_pivots=4):
     """ประเมินแนวโน้ม 'เด้งหรือทะลุ' (fake-out) ต่อแต่ละเส้น จาก Gamma regime
     price   : ราคาปัจจุบัน
     levels  : [{name, v}, ...] เส้นทั้งหมด (wall/pivot/flip)
     net_gex : ค่า Net GEX รวม (>=0 = Positive)
     flip    : ราคา Gamma Flip (หรือ None)
+    max_pivots : จำนวน Pivot ที่โชว์ (เอาเฉพาะใกล้ราคาสุด) — wall หลักโชว์เสมอ
     คืน (summary_text, rows) โดย rows เรียงจากเส้นที่ใกล้ราคาสุด:
       [{name, v, dist, side, verdict, emoji}, ...]
 
@@ -366,8 +385,14 @@ def fakeout_read(price, levels, net_gex, flip):
     else:
         dampen = (net_gex is not None) and (net_gex >= 0)
 
+    # wall/flip หลัก = โชว์เสมอ • pivot = เอาเฉพาะที่ใกล้ราคาสุด (กันตารางยาวเกิน)
+    majors = [lv for lv in levels if "Pivot" not in str(lv["name"])]
+    pivots = sorted([lv for lv in levels if "Pivot" in str(lv["name"])],
+                    key=lambda x: abs(x["v"] - price))[:max_pivots]
+    use = majors + pivots
+
     rows = []
-    for lv in sorted(levels, key=lambda x: abs(x["v"] - price)):
+    for lv in sorted(use, key=lambda x: abs(x["v"] - price)):
         v = lv["v"]
         if not price:
             continue
