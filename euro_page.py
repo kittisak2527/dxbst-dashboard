@@ -522,9 +522,9 @@ def render_pinescript():
                          f'color=color.new({col}, 10), linewidth=1)')
             alert_levels.append((f"Pivot {name}", piv[name]))
         lines.append("")
-    lines.append("if barstate.islast")
     if dampen is not None:
         lines.append(C.pine_mode_label(dampen))
+    lines.append("if barstate.islast")
     for v, t, c, s, w in walls:
         lt = f"{t} {v:.4f}"
         if t == "Max Pain" and dte is not None:
