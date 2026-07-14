@@ -589,6 +589,7 @@ def render_pinescript():
                          f'textcolor=color.white, size=size.tiny)')
     lines.append("")
     lines += C.pine_alerts(alert_levels, dampen)
+    lines += C.pine_entry_module(alert_levels, dampen)
     st.code("\n".join(lines), language="pine")
     st.caption(f"ค่าแปลงสเกลทองแล้ว (×{mult:.2f}) พล็อตบนกราฟ {primary} • มีป้ายชื่อกำกับแต่ละเส้น (ยื่นไปขวา ไม่ทับเทียน) • "
                "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
