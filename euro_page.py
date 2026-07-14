@@ -540,6 +540,7 @@ def render_pinescript():
                          f'textcolor=color.white, size=size.tiny)')
     lines.append("")
     lines += C.pine_alerts(alert_levels, dampen)
+    lines += C.pine_entry_module(alert_levels, dampen)
     st.code("\n".join(lines), language="pine")
     st.caption(f"ค่าแปลงสเกล EUR แล้ว (×{mult:.4f}) พล็อตบนกราฟ EUR/USD • มีป้ายชื่อกำกับแต่ละเส้น • "
                "ตั้งเตือน: คลิกขวากราฟ → Add alert → เลือกอินดิเคเตอร์นี้ → 'Any alert() function call' → Create • "
