@@ -302,6 +302,111 @@ def pine_alerts(levels, dampen=None):
     return out
 
 
+def pine_entry_module(levels, dampen):
+    """สร้าง 'Entry Module' (CISD @ option levels) ต่อท้าย PineScript — Phase 1: alert/marker layer
+    levels : list ของ (name, value) — ชุดเดียวกับที่ pine_alerts ใช้
+    dampen : True=โหมดหน่วง(fade/สวนเด้ง) • False=โหมดเร่ง(continuation/ตามเบรก)
+    * ต้องต่อ 'หลัง' pine_alerts เพราะใช้ nearPct จาก section นั้น
+    * CISD: open-anchor + run สีเดียวล้วน • body close เท่านั้น • ประเมิน barstate.isconfirmed (กัน repaint)
+    * ยังไม่มี auto-order (ตาม guardrail: เก็บ log สัญญาณก่อน)"""
+    if not levels:
+        return []
+    mode = "false" if dampen else "true"          # modeAccel: เร่ง=true / หน่วง=false
+    pv = ", ".join(f"{v:.2f}" for _, v in levels)
+    pn = ", ".join(f'"{n}"' for n, _ in levels)
+    return [
+        "",
+        "// ========= ENTRY MODULE: CISD @ Option Levels (Phase 1 = alert/marker) =========",
+        "// modeAccel true=เร่ง(ตามเบรก) / false=หน่วง(สวนเด้ง) — snapshot ณ ตอนเจน",
+        'grpE       = "Entry (CISD)"',
+        'eOn        = input.bool(true,  "เปิดสัญญาณเข้า (CISD)", group=grpE)',
+        'aggressive = input.bool(true,  "Aggressive: เข้าทันทีเมื่อ CISD", group=grpE)',
+        'showEntry  = input.bool(false, "แสดง marker จุดเข้า", group=grpE)',
+        'minLegBars = input.int(1, "ขั้นต่ำแท่งใน leg (กัน noise)", minval=1, group=grpE)',
+        f"modeAccel  = {mode}",
+        f"var levelP = array.from({pv})",
+        f"var levelN = array.from({pn})",
+        "",
+        "// ----- CISD core (open-anchor • run สีเดียว • กัน repaint) -----",
+        "isRed   = close < open",
+        "isGreen = close > open",
+        "redStart = isRed   and not (close[1] < open[1])",
+        "grnStart = isGreen and not (close[1] > open[1])",
+        "var float redAnchor = na",
+        "var int   redLen = 0",
+        "var int   lastRedLen = 0",
+        "var float grnAnchor = na",
+        "var int   grnLen = 0",
+        "var int   lastGrnLen = 0",
+        "if isRed",
+        "    redAnchor := redStart ? open : redAnchor",
+        "    redLen    := redStart ? 1 : redLen + 1",
+        "else",
+        "    redLen := 0",
+        "if (not isRed) and (close[1] < open[1])",
+        "    lastRedLen := redLen[1]",
+        "if isGreen",
+        "    grnAnchor := grnStart ? open : grnAnchor",
+        "    grnLen    := grnStart ? 1 : grnLen + 1",
+        "else",
+        "    grnLen := 0",
+        "if (not isGreen) and (close[1] > open[1])",
+        "    lastGrnLen := grnLen[1]",
+        "var bool redUsed = false",
+        "var bool grnUsed = false",
+        "if redStart",
+        "    redUsed := false",
+        "if grnStart",
+        "    grnUsed := false",
+        "bullCISD = not na(redAnchor) and not redUsed and close > open and ta.crossover(close, redAnchor) and lastRedLen >= minLegBars",
+        "bearCISD = not na(grnAnchor) and not grnUsed and close < open and ta.crossunder(close, grnAnchor) and lastGrnLen >= minLegBars",
+        "if bullCISD",
+        "    redUsed := true",
+        "if bearCISD",
+        "    grnUsed := true",
+        "",
+        "// ----- หา level ที่ราคาใกล้ (ใช้ nearPct จาก section alert เดิม) -----",
+        "nearIdx = -1",
+        "if barstate.isconfirmed",
+        "    for i = 0 to array.size(levelP) - 1",
+        "        if math.abs(close - array.get(levelP, i)) / array.get(levelP, i) <= nearPct",
+        "            nearIdx := i",
+        "            break",
+        "nearNow = nearIdx >= 0",
+        "safeIdx = nearIdx >= 0 ? nearIdx : 0",
+        "nLevel  = array.get(levelP, safeIdx)",
+        'nName   = nearNow ? array.get(levelN, safeIdx) : ""',
+        "",
+        "// ----- สัญญาณเข้า (แยกตามโหมด) -----",
+        "rawLong  = false",
+        "rawShort = false",
+        "if eOn and nearNow and barstate.isconfirmed",
+        "    if modeAccel",
+        "        rawLong  := close > nLevel and bullCISD",
+        "        rawShort := close < nLevel and bearCISD",
+        "    else",
+        "        rawShort := close >= nLevel and bearCISD",
+        "        rawLong  := close <= nLevel and bullCISD",
+        "// conservative (aggressive=false): กรองด้วยแท่ง body เด่น (proxy ของ IFVG retest — เวอร์ชันเต็มไว้ Phase 2)",
+        "bodyStrong = math.abs(close - open) >= (high - low) * 0.5",
+        "goLong  = rawLong  and (aggressive or bodyStrong)",
+        "goShort = rawShort and (aggressive or bodyStrong)",
+        "",
+        'plotshape(showEntry and goLong,  "LONG",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small)',
+        'plotshape(showEntry and goShort, "SHORT", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small)',
+        "",
+        "// ----- ALERTS (freq_once_per_bar_close กัน repaint) -----",
+        'modeTxt = modeAccel ? "continuation" : "fade"',
+        'modeTh  = modeAccel ? "เร่ง" : "หน่วง"',
+        "if eOn and nearNow and not nearNow[1]",
+        '    alert("⚡ ARM — ราคาเข้าใกล้ " + nName + " • โหมด " + modeTh, alert.freq_once_per_bar_close)',
+        "if eOn and goLong",
+        '    alert("🟢 LONG — CISD ยืนยันขึ้นที่ " + nName + " • " + modeTxt, alert.freq_once_per_bar_close)',
+        "if eOn and goShort",
+        '    alert("🔴 SHORT — CISD ยืนยันลงที่ " + nName + " • " + modeTxt, alert.freq_once_per_bar_close)',
+    ]
+
+
 def apply_theme():
     st.markdown("""<style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
