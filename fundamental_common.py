@@ -73,6 +73,29 @@ def fred_latest(series_id, n=10):
 
 
 @_safe
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fred_lookback(series_id, back=30):
+    """เหมือน fred_latest แต่เทียบกับค่าเมื่อ 'back' ครั้งก่อน (ไม่ใช่ครั้งเดียวก่อนหน้า)
+    ใช้กับดอกเบี้ยนโยบายที่เปลี่ยนเฉพาะวันประชุม — ถ้าเทียบวันต่อวันจะได้ 0 เกือบตลอด
+    คืน dict: value, prev, change, date"""
+    if not FRED_KEY:
+        return None
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": series_id, "api_key": FRED_KEY, "file_type": "json",
+        "sort_order": "desc", "limit": back + 5,
+    }
+    r = requests.get(url, params=params, headers=UA, timeout=TIMEOUT)
+    obs = r.json().get("observations", [])
+    vals = [(o["date"], float(o["value"])) for o in obs if o.get("value") not in (".", "", None)]
+    if len(vals) < 2:
+        return None
+    d0, v0 = vals[0]
+    _, v1 = vals[min(back, len(vals) - 1)]      # ย้อนไป back ครั้ง (หรือเท่าที่มี)
+    return {"value": v0, "prev": v1, "change": v0 - v1, "date": d0, "series": series_id}
+
+
+@_safe
 @st.cache_data(ttl=1800, show_spinner=False)
 def dxy_ice():
     """ดัชนีดอลลาร์ DXY (ICE) จาก yfinance DX-Y.NYB — ตัวเดียวกับหน้า Technical (~101)
@@ -405,3 +428,48 @@ def btc_fundamental():
             "news": news, "news_avg": navg,
             "bias": bias_from_votes(votes),
             "calendar": econ_calendar(currencies=("USD",))}
+
+
+def eur_fundamental():
+    """รวมทุกอย่างของ EUR/USD: มาโคร + ส่วนต่างดอกเบี้ย Fed vs ECB + ข่าว + bias
+    คืน dict: {dxy, real, ff, ecb, diff, diff_chg, news, news_avg, bias, calendar}
+
+    ตัวขับเคลื่อนหลักของ EUR/USD = ส่วนต่างดอกเบี้ย (Fed − ECB)
+      กว้างขึ้น (Fed สูงกว่า/ECB ลด) -> เงินไหลเข้า USD -> EUR ลง
+      แคบลง -> EUR ขึ้น
+    หมายเหตุ: ดอกเบี้ยนโยบายเปลี่ยนเฉพาะวันประชุม จึงเทียบย้อน ~30 ครั้ง (≈1 เดือน)"""
+    dxy  = dxy_ice()
+    real = fred_latest("DFII10")            # real yield สหรัฐฯ (ช่องทางความแข็งของดอลลาร์)
+    ff   = fred_lookback("DFF", 30)         # Fed funds effective (รายวัน)
+    ecb  = fred_lookback("ECBDFR", 30)      # ECB deposit facility rate (รายวัน)
+    news = av_news(tickers="FXE", focus="FXE")   # FXE = ETF ค่าเงินยูโร
+    items = news.get("items", [])
+    nv, navg = news_vote(items)
+
+    diff = diff_chg = None
+    if ff and ecb:
+        diff = ff["value"] - ecb["value"]                 # ส่วนต่างปัจจุบัน
+        diff_chg = ff["change"] - ecb["change"]           # ส่วนต่างเปลี่ยนไปเท่าไรใน ~1 เดือน
+
+    votes = []
+    if diff_chg is not None:
+        votes.append({"name": "ส่วนต่างดอกเบี้ย Fed − ECB",
+                      "vote": _vote_band(diff_chg, up_is_bull=False, band=0.05),
+                      "detail": f"{diff:+.2f}% (Δ1เดือน {diff_chg:+.2f}) — กว้างขึ้น=ลบต่อ EUR"})
+    if dxy:
+        votes.append({"name": "ดัชนีดอลลาร์ (DXY)",
+                      "vote": _vote_band(dxy["change"], up_is_bull=False, band=0.10),
+                      "detail": f"{dxy['value']:.2f} (Δ {dxy['change']:+.2f}) — ลง=บวกต่อ EUR"})
+    if real:
+        votes.append({"name": "Real Yield 10Y (US)",
+                      "vote": _vote_band(real["change"], up_is_bull=False, band=0.02),
+                      "detail": f"{real['value']:.2f}% (Δ {real['change']:+.2f}) — ขึ้น=ดอลลาร์แข็ง=ลบต่อ EUR"})
+    if items:
+        votes.append({"name": "Sentiment ข่าว (FXE)", "vote": nv,
+                      "detail": f"เฉลี่ย {navg:+.2f} จาก {len(items)} ข่าว"})
+
+    return {"dxy": dxy, "real": real, "ff": ff, "ecb": ecb,
+            "diff": diff, "diff_chg": diff_chg,
+            "news": news, "news_avg": navg,
+            "bias": bias_from_votes(votes),
+            "calendar": econ_calendar(currencies=("USD", "EUR"))}
