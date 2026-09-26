@@ -52,6 +52,8 @@ def _block(asset, snap):
         gs = 0
     out.append(f"float  {p}_gsign = {gs}")
     out.append(f"int    {p}_ts    = {int(snap.get('ts_ms', 0))}")
+    out.append(f"float  {p}_ref   = {_num(snap.get('refPrice'), max(dec, 2))}")
+    out.append(f"int    {p}_refts = {int(snap.get('ref_ts_ms') or 0)}")
     exp = snap.get("expiry") or ""
     out.append(f"int    {p}_expts = {expiry_ts_ms(exp) if exp else 0}")
     out.append(f"string {p}_src   = {_q(snap.get('source', ''))}")
@@ -77,7 +79,7 @@ def build_pine(snaps, gen_ts_ms):
 PINE_BODY = r'''
 // ═══════════════════════ ตั้งค่า ═══════════════════════
 grpL     = "เส้น"
-adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E) จากราคาปิดวันก่อน", group=grpL)
+adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E)", group=grpL)
 showLbl  = input.bool(true,  "แสดงป้ายราคา", group=grpL)
 mergePct = input.float(0.10, "รวมป้ายเมื่อเส้นห่างกันไม่เกิน %", minval=0.0, step=0.05, group=grpL) / 100
 grpS     = "อายุข้อมูล"
@@ -129,11 +131,27 @@ cdTxt = f_cd(msLeft)
 assetLbl = isXAU ? "XAUUSD" : isEUR ? "EURUSD" : isBTC ? "BTCUSD" : "—"
 
 // ค่าทองอยู่ในสเกล GC (futures) • ยูโรอยู่ในสเกล spot → ปรับด้วยอัตราส่วนสดกับสัญลักษณ์อ้างอิง
-// ใช้ "ราคาปิดวันก่อน" ของทั้งสองตัว (ปิดแล้ว ไม่ repaint) → ทุก timeframe ได้ basis เดียวกัน
+// ── basis วิธีหลัก: เทียบ ณ เวลาเจน ──
+// แดชบอร์ดฝัง "ราคาอ้างอิงที่ใช้สเกลเส้น" + เวลาของราคานั้นมาให้
+// → หาราคาชาร์ตนี้ ณ เวลาเดียวกัน (จากแท่ง 5 นาที ทุก TF ได้ค่าเดียวกัน) แล้วหารกัน
+refPx = isXAU ? xau_ref   : isEUR ? eur_ref   : na
+refTs = isXAU ? xau_refts : isEUR ? eur_refts : 0
+f_pxAt(int ts) =>
+    var float p = na
+    if ts > 0 and time_close <= ts
+        p := close
+    p
+pxAtRef = request.security(syminfo.tickerid, "5", f_pxAt(refTs))
+useSnapBasis = not na(refPx) and refPx > 0 and not na(pxAtRef)
+
+// ── basis สำรอง: ราคาปิดวันก่อน (ใช้เมื่อ snapshot เก่ายังไม่มีราคาอ้างอิง) ──
 refSym   = isXAU ? "COMEX:GC1!" : isEUR ? "FX:EURUSD" : syminfo.tickerid
 refPrevD = request.security(refSym, "D", close[1], lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true)
 chPrevD  = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
-rawRatio = (adjBasis and not isBTC and not na(refPrevD) and refPrevD > 0 and not na(chPrevD)) ? chPrevD / refPrevD : 1.0
+dailyOK  = not na(refPrevD) and refPrevD > 0 and not na(chPrevD)
+
+rawRatio = (not adjBasis or isBTC) ? 1.0 : useSnapBasis ? pxAtRef / refPx : dailyOK ? chPrevD / refPrevD : 1.0
+basisHow = useSnapBasis ? "เทียบ ณ เวลาเจน" : dailyOK ? "ปิดวันก่อน" : "ไม่ปรับ"
 ratio    = math.abs(rawRatio - 1.0) > 0.05 ? 1.0 : rawRatio      // กันข้อมูลเพี้ยน
 
 f_adj(v) => na(v) ? na : v * ratio
@@ -235,7 +253,7 @@ if barstate.islast
         ageBg = ageH >= redH ? color.new(color.red, 10) : stale ? color.new(color.orange, 20) : color.new(color.gray, 30)
         table.cell(tb, 0, 2, "ดึงเมื่อ " + str.format_time(tsSel, "dd/MM HH:mm", "Asia/Bangkok") + " • " + ageTxt + (stale ? " • ค่าเก่า" : ""), bgcolor=ageBg, text_color=color.white, text_size=size.small)
         if math.abs(ratio - 1.0) > 0.0005
-            table.cell(tb, 0, 3, "ปรับ basis ×" + str.tostring(ratio, "#.####") + " (ปิดวันก่อน)", bgcolor=color.new(color.gray, 45), text_color=color.white, text_size=size.tiny)
+            table.cell(tb, 0, 3, "ปรับ basis ×" + str.tostring(ratio, "#.####") + " (" + basisHow + ")", bgcolor=color.new(color.gray, 45), text_color=color.white, text_size=size.tiny)
 
 // ═══════════════════════ แจ้งเตือนใกล้ / เบรกเส้น ═══════════════════════
 if alertsOn and nKeys > 0

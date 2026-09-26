@@ -33,6 +33,16 @@ def _age(ms):
     return f"{h:.0f} ชม." if h < 48 else f"{h / 24:.1f} วัน"
 
 
+YAHOO_FUT_DELAY_MS = 10 * 60 * 1000   # ราคา futures ของ Yahoo ดีเลย์ ~10 นาที
+
+
+def _ref(price, delay_ms=0):
+    """ราคาสินทรัพย์อ้างอิงที่ใช้สเกลเส้น + เวลาของราคานั้น → Pine ใช้หา basis ณ เวลาเดียวกัน"""
+    if not price:
+        return {"refPrice": None, "ref_ts_ms": 0}
+    return {"refPrice": float(price), "ref_ts_ms": _now_ms() - delay_ms}
+
+
 def _gex_part(gx, prev, mult=1.0):
     """GEX ใหม่ -> ใช้ • GEX พลาดแต่ walls มา -> ยืม GEX ชุดเก่า (บอกในหมายเหตุ)"""
     if gx:
@@ -71,10 +81,12 @@ def fetch_gold(prev):
         return None, "หาตัวคูณ GLD→GC ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"
     m = am["mult"]
     g, note = _gex_part(G.gld_gex(0.20), prev)          # gld_gex คืนสเกลทองมาแล้ว
+    q = G.gold_quote(G.primary)                          # ราคา GC ที่ใช้สเกลเส้น (Yahoo GC=F)
     snap = {"ts_ms": _now_ms(), "source": "GLD→GC", "expiry": opt["expiry"],
             "dte": G._dte_gold(opt["expiry"]),
             "callWall": opt["callWall"] * m, "putWall": opt["putWall"] * m,
-            "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g}
+            "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g,
+            **_ref(q["price"] if q else None, YAHOO_FUT_DELAY_MS)}
     return snap, note
 
 
@@ -89,10 +101,12 @@ def fetch_eur(prev):
         return None, "หาตัวคูณ FXE→EUR ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"
     m = am["mult"]
     g, note = _gex_part(E.fxe_gex(0.20), prev)          # fxe_gex คืนสเกล EUR มาแล้ว
+    q = E.eur_quote()                                    # ราคา EUR spot ที่ใช้สเกลเส้น
     snap = {"ts_ms": _now_ms(), "source": "FXE→EUR", "expiry": opt["expiry"],
             "dte": E._dte_eur(opt["expiry"]),
             "callWall": opt["callWall"] * m, "putWall": opt["putWall"] * m,
-            "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g}
+            "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g,
+            **_ref(q["price"] if q else None)}
     return snap, note
 
 
