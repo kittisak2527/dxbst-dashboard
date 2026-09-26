@@ -73,14 +73,24 @@ def opt_chain(expiry):
     return C.soft_call(("chain", OPTIONS_TICKER, expiry), lambda: _opt_chain_raw(expiry))
 
 
-def pick_monthly(exps):
-    for e in exps:
+MIN_DTE = 3   # งวดที่เหลือ <= 3 วัน OI มักกองที่ strike ไกลราคา + หมดอายุแล้วเส้นไร้ความหมาย → ข้ามไปงวดถัดไป
+
+
+def pick_monthly(exps, min_dte=MIN_DTE):
+    """งวดรายเดือน (ศุกร์ที่ 3) ที่เหลืออายุเกิน min_dte วัน • ไม่มี -> งวดใดก็ได้ที่เกิน • ไม่มีเลย -> งวดแรก"""
+    today = datetime.now(timezone.utc).date()
+    dated = []
+    for e in exps or []:
         try:
-            d = datetime.strptime(e, "%Y-%m-%d").date()
-            if d.weekday() == 4 and 15 <= d.day <= 21:
-                return e
+            dated.append((e, datetime.strptime(e, "%Y-%m-%d").date()))
         except Exception:
             continue
+    for e, d in dated:
+        if d.weekday() == 4 and 15 <= d.day <= 21 and (d - today).days > min_dte:
+            return e
+    for e, d in dated:
+        if (d - today).days > min_dte:
+            return e
     return exps[0] if exps else None
 
 

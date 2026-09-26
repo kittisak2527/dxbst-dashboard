@@ -21,6 +21,17 @@ def _num(v, dec):
         return "na"
 
 
+def expiry_ts_ms(expiry):
+    """Deribit '25DEC26' = 08:00 UTC • ETF options '2026-10-16' = ปิดตลาด US ~20:00 UTC"""
+    for fmt, hour in (("%d%b%y", 8), ("%Y-%m-%d", 20)):
+        try:
+            d = datetime.strptime(str(expiry).upper() if fmt == "%d%b%y" else str(expiry), fmt)
+            return int(d.replace(hour=hour, tzinfo=timezone.utc).timestamp() * 1000)
+        except Exception:
+            continue
+    return 0
+
+
 def _q(s):
     return '"' + str(s or "").replace('"', "'") + '"'
 
@@ -42,8 +53,7 @@ def _block(asset, snap):
     out.append(f"float  {p}_gsign = {gs}")
     out.append(f"int    {p}_ts    = {int(snap.get('ts_ms', 0))}")
     exp = snap.get("expiry") or ""
-    if exp and snap.get("dte") is not None:
-        exp = f"{exp} ({snap['dte']}d)"
+    out.append(f"int    {p}_expts = {expiry_ts_ms(exp) if exp else 0}")
     out.append(f"string {p}_src   = {_q(snap.get('source', ''))}")
     out.append(f"string {p}_exp   = {_q(exp)}")
     return out
@@ -67,7 +77,7 @@ def build_pine(snaps, gen_ts_ms):
 PINE_BODY = r'''
 // ═══════════════════════ ตั้งค่า ═══════════════════════
 grpL     = "เส้น"
-adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E)", group=grpL)
+adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E) จากราคาปิดวันก่อน", group=grpL)
 showLbl  = input.bool(true,  "แสดงป้ายราคา", group=grpL)
 mergePct = input.float(0.10, "รวมป้ายเมื่อเส้นห่างกันไม่เกิน %", minval=0.0, step=0.05, group=grpL) / 100
 grpS     = "อายุข้อมูล"
@@ -96,12 +106,34 @@ tsSel = isXAU ? xau_ts  : isEUR ? eur_ts  : isBTC ? btc_ts  : 0
 srcS  = isXAU ? xau_src : isEUR ? eur_src : isBTC ? btc_src : ""
 expS  = isXAU ? xau_exp : isEUR ? eur_exp : isBTC ? btc_exp : ""
 gsign = isXAU ? xau_gsign : isEUR ? eur_gsign : isBTC ? btc_gsign : 0.0
+expTs = isXAU ? xau_expts : isEUR ? eur_expts : isBTC ? btc_expts : 0
+
+// ═══ นับถอยหลังงวด options (สด ทุกแท่ง) ═══
+grpE    = "งวด options"
+expWarn = input.float(3, "เตือนใกล้หมดอายุ (วัน)", minval=0.5, step=0.5, group=grpE)
+cdOnMP  = input.bool(true, "ต่อท้ายป้าย Max Pain ด้วยเวลาที่เหลือ", group=grpE)
+msLeft  = expTs > 0 ? float(expTs - timenow) : na
+expired = not na(msLeft) and msLeft <= 0
+expNear = not na(msLeft) and not expired and msLeft <= expWarn * 86400000
+f_cd(ms) =>
+    string r = ""
+    if not na(ms)
+        if ms <= 0
+            r := "หมดอายุแล้ว"
+        else if ms < 86400000
+            r := str.tostring(math.floor(ms / 3600000)) + " ชม. " + str.tostring(math.floor(ms / 60000) % 60) + " น."
+        else
+            r := str.tostring(math.floor(ms / 86400000)) + " วัน " + str.tostring(math.floor(ms / 3600000) % 24) + " ชม."
+    r
+cdTxt = f_cd(msLeft)
 assetLbl = isXAU ? "XAUUSD" : isEUR ? "EURUSD" : isBTC ? "BTCUSD" : "—"
 
 // ค่าทองอยู่ในสเกล GC (futures) • ยูโรอยู่ในสเกล spot → ปรับด้วยอัตราส่วนสดกับสัญลักษณ์อ้างอิง
+// ใช้ "ราคาปิดวันก่อน" ของทั้งสองตัว (ปิดแล้ว ไม่ repaint) → ทุก timeframe ได้ basis เดียวกัน
 refSym   = isXAU ? "COMEX:GC1!" : isEUR ? "FX:EURUSD" : syminfo.tickerid
-refClose = request.security(refSym, timeframe.period, close, ignore_invalid_symbol=true)
-rawRatio = (adjBasis and not isBTC and not na(refClose) and refClose > 0) ? close / refClose : 1.0
+refPrevD = request.security(refSym, "D", close[1], lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true)
+chPrevD  = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+rawRatio = (adjBasis and not isBTC and not na(refPrevD) and refPrevD > 0 and not na(chPrevD)) ? chPrevD / refPrevD : 1.0
 ratio    = math.abs(rawRatio - 1.0) > 0.05 ? 1.0 : rawRatio      // กันข้อมูลเพี้ยน
 
 f_adj(v) => na(v) ? na : v * ratio
@@ -167,13 +199,16 @@ if barstate.islast
                             if not array.get(used, j) and math.abs(array.get(keyP, j) - v) <= v * mergePct
                                 txt := txt + " · " + array.get(keyN, j)
                                 array.set(used, j, true)
-                    array.push(lbs, label.new(bar_index + 3, v, txt + " " + str.tostring(v, format.mintick), style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
+                    txt := txt + " " + str.tostring(v, format.mintick)
+                    if cdOnMP and cdTxt != "" and str.contains(txt, "Max Pain")
+                        txt := txt + " • ⏳ " + cdTxt
+                    array.push(lbs, label.new(bar_index + 3, v, txt, style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
 
 // ═══════════════════════ ตารางสถานะ ═══════════════════════
 ageH   = tsSel > 0 ? (timenow - tsSel) / 3600000.0 : 0.0
 ageTxt = ageH < 48 ? str.tostring(math.round(ageH)) + " ชม." : str.tostring(math.round(ageH / 24)) + " วัน"
 
-var table tb = table.new(position.top_right, 1, 4, border_width=1)
+var table tb = table.new(position.top_right, 1, 5, border_width=1)
 if barstate.islast
     string mTxt = ""
     color  mBg  = color.new(color.gray, 20)
@@ -191,12 +226,16 @@ if barstate.islast
         mBg  := color.new(color.orange, 10)
     table.cell(tb, 0, 0, mTxt, bgcolor=mBg, text_color=color.white, text_size=size.normal)
     if matched and hasD
-        table.cell(tb, 0, 1, assetLbl + " • " + srcS + (expS != "" ? " • " + expS : ""), bgcolor=color.new(color.gray, 30), text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 1, assetLbl + " • " + srcS, bgcolor=color.new(color.gray, 30), text_color=color.white, text_size=size.small)
+        if expS != ""
+            expBg  = expired ? color.new(color.red, 10) : expNear ? color.new(color.orange, 20) : color.new(color.gray, 30)
+            expTag = expired ? " • เจนใหม่ด่วน" : expNear ? " • ใกล้หมดอายุ Max Pain ดึงแรง" : ""
+            table.cell(tb, 0, 4, "งวด " + expS + " • ⏳ " + cdTxt + expTag, bgcolor=expBg, text_color=color.white, text_size=size.small)
         stale = ageH >= warnH
         ageBg = ageH >= redH ? color.new(color.red, 10) : stale ? color.new(color.orange, 20) : color.new(color.gray, 30)
         table.cell(tb, 0, 2, "ดึงเมื่อ " + str.format_time(tsSel, "dd/MM HH:mm", "Asia/Bangkok") + " • " + ageTxt + (stale ? " • ค่าเก่า" : ""), bgcolor=ageBg, text_color=color.white, text_size=size.small)
         if math.abs(ratio - 1.0) > 0.0005
-            table.cell(tb, 0, 3, "ปรับ basis ×" + str.tostring(ratio, "#.####"), bgcolor=color.new(color.gray, 45), text_color=color.white, text_size=size.tiny)
+            table.cell(tb, 0, 3, "ปรับ basis ×" + str.tostring(ratio, "#.####") + " (ปิดวันก่อน)", bgcolor=color.new(color.gray, 45), text_color=color.white, text_size=size.tiny)
 
 // ═══════════════════════ แจ้งเตือนใกล้ / เบรกเส้น ═══════════════════════
 if alertsOn and nKeys > 0
