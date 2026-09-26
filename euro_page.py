@@ -6,7 +6,8 @@ import altair as alt
 
 import common as C
 
-C.apply_theme()
+if __name__ == "__main__":   # รันเป็นหน้าเว็บเท่านั้น (import จากหน้าอื่นจะไม่ render)
+    C.apply_theme()
 
 # ====== ตั้งค่า (view-only) ======
 PRIMARY = "EUR"
@@ -41,15 +42,19 @@ def eur_pivot_ref():
 
 # ---------- FXE options ----------
 @st.cache_data(ttl=900, show_spinner=False)
+def _opt_expiries_raw():
+    exps = C.with_retry(lambda: list(yf.Ticker(OPTIONS_TICKER).options))
+    if not exps:
+        raise RuntimeError("empty expiries")      # ไม่ให้แคชลิสต์ว่าง
+    return exps
+
+
 def opt_expiries():
-    try:
-        return C.with_retry(lambda: list(yf.Ticker(OPTIONS_TICKER).options))
-    except Exception:
-        return []
+    return C.soft_call(("exp", OPTIONS_TICKER), _opt_expiries_raw, default=[])
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def opt_chain(expiry):
+def _opt_chain_raw(expiry):
     def _f():
         oc = yf.Ticker(OPTIONS_TICKER).option_chain(expiry)
         cols = ["strike", "openInterest", "impliedVolatility"]
@@ -58,11 +63,14 @@ def opt_chain(expiry):
         for d in (c, p):
             d["openInterest"] = d["openInterest"].fillna(0)
             d["impliedVolatility"] = d["impliedVolatility"].fillna(0)
+        if c.empty or p.empty:
+            raise RuntimeError("empty chain")
         return c, p
-    try:
-        return C.with_retry(_f)
-    except Exception:
-        return None
+    return C.with_retry(_f)
+
+
+def opt_chain(expiry):
+    return C.soft_call(("chain", OPTIONS_TICKER, expiry), lambda: _opt_chain_raw(expiry))
 
 
 def pick_monthly(exps):
@@ -572,4 +580,5 @@ def body():
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • FXE เป็น proxy ลิควิดน้อย • ไม่ใช่ราคาสดโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
 
-body()
+if __name__ == "__main__":
+    body()

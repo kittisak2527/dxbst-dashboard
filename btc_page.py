@@ -5,7 +5,8 @@ import altair as alt
 
 import common as C
 
-C.apply_theme()
+if __name__ == "__main__":   # รันเป็นหน้าเว็บเท่านั้น (import จากหน้าอื่นจะไม่ render)
+    C.apply_theme()
 
 # ====== ตั้งค่า (view-only) ======
 REFRESH_SECONDS = 1800
@@ -552,4 +553,5 @@ def body():
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • เป็นข้อมูลดีเลย์ ไม่ใช่ราคาสดของโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 
 
-body()
+if __name__ == "__main__":
+    body()

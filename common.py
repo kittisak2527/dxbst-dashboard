@@ -2,6 +2,7 @@
 import io
 import json
 import math
+import time
 import urllib.parse
 import urllib.request
 
@@ -59,20 +60,54 @@ def _yf_series(symbol, interval, period):
                          "close": df["Close"].astype(float).values})
 
 
+# ---------- กันแคช "ความล้มเหลว" ----------
+# เดิม: ดึงพลาด -> คืน None -> st.cache_data จำ None ไว้ 10-15 นาที (รีเฟรชยังไงก็ไม่มา)
+# ใหม่: ฟังก์ชันแคช "โยน error" เมื่อพลาด (Streamlit ไม่แคช error) + จำเวลาที่พลาดไว้สั้น ๆ 90 วิ
+#       กันยิง Yahoo รัว ๆ ในรอบเดียว แต่รอบถัดไป/กดปุ่มดึงใหม่ จะได้ลองจริงทันที
+_FAIL = {}
+
+
+def _fail_recent(key, secs=90):
+    t = _FAIL.get(key)
+    return t is not None and (time.time() - t) < secs
+
+
+def soft_call(key, fn, default=None, secs=90):
+    if _fail_recent(key, secs):
+        return default
+    try:
+        return fn()
+    except Exception:
+        _FAIL[key] = time.time()
+        return default
+
+
+def reset_failures():
+    _FAIL.clear()
+
+
 @st.cache_data(ttl=600, show_spinner=False)
+def _yf_daily_raw(symbol):
+    df = with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
+    if df is None:
+        raise RuntimeError(f"empty daily {symbol}")
+    return df
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _yf_hourly_raw(symbol):
+    df = with_retry(lambda: _yf_series(symbol, "60m", "7d"))
+    if df is None:
+        raise RuntimeError(f"empty hourly {symbol}")
+    return df
+
+
 def yf_daily(symbol):
-    try:
-        return with_retry(lambda: _yf_series(symbol, "1d", "1mo"))
-    except Exception:
-        return None
+    return soft_call(("d", symbol), lambda: _yf_daily_raw(symbol))
 
 
-@st.cache_data(ttl=600, show_spinner=False)
 def yf_hourly(symbol):
-    try:
-        return with_retry(lambda: _yf_series(symbol, "60m", "7d"))
-    except Exception:
-        return None
+    return soft_call(("h", symbol), lambda: _yf_hourly_raw(symbol))
 
 
 def _td_series(symbol, interval, size, key):

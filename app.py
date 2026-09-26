@@ -8,6 +8,7 @@ pages = {
         st.Page("gold_page.py", title="ทองคำ", icon="🥇", default=True),
         st.Page("btc_page.py", title="BTCUSD", icon="🪙"),
         st.Page("euro_page.py", title="EUR/USD", icon="💶"),
+        st.Page("pine3_page.py", title="Pine 3-in-1", icon="🧩"),
     ],
     "📰 Fundamental": [
         st.Page("gold_fund_page.py", title="พื้นฐานทองคำ", icon="🥇"),
