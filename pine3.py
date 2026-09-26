@@ -31,7 +31,7 @@ def _block(asset, snap):
     snap = snap or {}
     stamp = (datetime.fromtimestamp(snap["ts_ms"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
              if has else "ยังไม่มีข้อมูล")
-    out = [f"// ── {LABEL[asset]} · {snap.get('source', '-')} · ข้อมูลเมื่อ {stamp}"]
+    out = [f"// ── {LABEL[asset]} · {snap.get('source', '-')} · ดึงเมื่อ {stamp}"]
     out.append(f"bool   {p}_has   = {'true' if has else 'false'}")
     for key, short in FIELDS:
         out.append(f"float  {p}_{short:<5}= {_num(snap.get(key), dec)}")
@@ -69,6 +69,7 @@ PINE_BODY = r'''
 grpL     = "เส้น"
 adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E)", group=grpL)
 showLbl  = input.bool(true,  "แสดงป้ายราคา", group=grpL)
+mergePct = input.float(0.10, "รวมป้ายเมื่อเส้นห่างกันไม่เกิน %", minval=0.0, step=0.05, group=grpL) / 100
 grpS     = "อายุข้อมูล"
 warnH    = input.float(30, "เหลือง เมื่อเก่ากว่า (ชม.)", minval=1, group=grpS)
 redH     = input.float(80, "แดง เมื่อเก่ากว่า (ชม.)  • 80 = ข้ามเสาร์-อาทิตย์ได้", minval=1, group=grpS)
@@ -131,12 +132,12 @@ keyN = array.new_string()
 keyK = array.new_color()
 keyW = array.new_int()
 if matched and hasD
+    f_push(keyP, keyN, keyK, keyW, flipL, "Gamma Flip",    color.fuchsia, 2)
     f_push(keyP, keyN, keyK, keyW, callL, "Call Wall",     color.red,     2)
     f_push(keyP, keyN, keyK, keyW, putL,  "Put Wall",      color.green,   2)
     f_push(keyP, keyN, keyK, keyW, mpL,   "Max Pain",      color.yellow,  2)
     f_push(keyP, keyN, keyK, keyW, gexCL, "GEX Call Wall", color.orange,  1)
     f_push(keyP, keyN, keyK, keyW, gexPL, "GEX Put Wall",  color.aqua,    1)
-    f_push(keyP, keyN, keyK, keyW, flipL, "Gamma Flip",    color.fuchsia, 2)
 nKeys = array.size(keyP)
 
 // ═══════════════════════ วาดเส้น + ป้าย (แท่งล่าสุด) ═══════════════════════
@@ -154,8 +155,19 @@ if barstate.islast
             c  = array.get(keyK, i)
             st = n == "Max Pain" ? line.style_dotted : (n == "Call Wall" or n == "Put Wall") ? line.style_dashed : line.style_solid
             array.push(lns, line.new(bar_index - 1, v, bar_index, v, extend=extend.both, color=c, width=array.get(keyW, i), style=st))
-            if showLbl
-                array.push(lbs, label.new(bar_index + 3, v, n + " " + str.tostring(v, format.mintick), style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
+        if showLbl
+            used = array.new_bool(nKeys, false)
+            for i = 0 to nKeys - 1
+                if not array.get(used, i)
+                    v   = array.get(keyP, i)
+                    c   = array.get(keyK, i)
+                    txt = array.get(keyN, i)
+                    if i < nKeys - 1
+                        for j = i + 1 to nKeys - 1
+                            if not array.get(used, j) and math.abs(array.get(keyP, j) - v) <= v * mergePct
+                                txt := txt + " · " + array.get(keyN, j)
+                                array.set(used, j, true)
+                    array.push(lbs, label.new(bar_index + 3, v, txt + " " + str.tostring(v, format.mintick), style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
 
 // ═══════════════════════ ตารางสถานะ ═══════════════════════
 ageH   = tsSel > 0 ? (timenow - tsSel) / 3600000.0 : 0.0
@@ -182,7 +194,7 @@ if barstate.islast
         table.cell(tb, 0, 1, assetLbl + " • " + srcS + (expS != "" ? " • " + expS : ""), bgcolor=color.new(color.gray, 30), text_color=color.white, text_size=size.small)
         stale = ageH >= warnH
         ageBg = ageH >= redH ? color.new(color.red, 10) : stale ? color.new(color.orange, 20) : color.new(color.gray, 30)
-        table.cell(tb, 0, 2, "ข้อมูลเมื่อ " + str.format_time(tsSel, "dd/MM HH:mm", "Asia/Bangkok") + " • " + ageTxt + (stale ? " • ค่าเก่า" : ""), bgcolor=ageBg, text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 2, "ดึงเมื่อ " + str.format_time(tsSel, "dd/MM HH:mm", "Asia/Bangkok") + " • " + ageTxt + (stale ? " • ค่าเก่า" : ""), bgcolor=ageBg, text_color=color.white, text_size=size.small)
         if math.abs(ratio - 1.0) > 0.0005
             table.cell(tb, 0, 3, "ปรับ basis ×" + str.tostring(ratio, "#.####"), bgcolor=color.new(color.gray, 45), text_color=color.white, text_size=size.tiny)
 

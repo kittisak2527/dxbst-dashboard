@@ -140,16 +140,16 @@ def status_cards(snaps, result):
         state, note = (result or {}).get(a, (None, ""))
         if state == "fresh":
             big, color = "✅ อัปเดตใหม่", "#38c172"
-            sub = f"ข้อมูลเมื่อ {_fmt_ts(snap['ts_ms'])}" + (f" • {note}" if note else "")
+            sub = f"ดึงเมื่อ {_fmt_ts(snap['ts_ms'])}" + (f" • {note}" if note else "")
         elif state == "stale":
             big, color = "🟡 ใช้ค่าเก่า", "#e8c565"
-            sub = f"เมื่อ {_fmt_ts(snap['ts_ms'])} ({_age(snap['ts_ms'])}) • {note}"
+            sub = f"ดึงเมื่อ {_fmt_ts(snap['ts_ms'])} ({_age(snap['ts_ms'])}) • {note}"
         elif state == "none":
             big, color = "⛔ ยังไม่มีข้อมูล", "#e3506a"
             sub = note or "ยังไม่เคยดึงสำเร็จ"
         elif snap:
             big, color = "📦 ค่าที่เก็บไว้", "#9fb0c8"
-            sub = f"เมื่อ {_fmt_ts(snap['ts_ms'])} ({_age(snap['ts_ms'])}) • กดปุ่มเพื่อดึงใหม่"
+            sub = f"ดึงเมื่อ {_fmt_ts(snap['ts_ms'])} ({_age(snap['ts_ms'])}) • กดปุ่มเพื่อดึงใหม่"
         else:
             big, color = "— ว่าง", "#9fb0c8"
             sub = "กดปุ่มเพื่อดึงครั้งแรก"
