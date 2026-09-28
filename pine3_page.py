@@ -17,7 +17,7 @@ import euro_page as E
 
 TH = timezone(timedelta(hours=7))
 NAMES = {"BTC": "₿ BTCUSD", "XAU": "🥇 ทองคำ", "EUR": "💶 EUR/USD"}
-SRC = {"BTC": "Deribit", "XAU": "GLD→GC", "EUR": "FXE→EUR"}
+SRC = {"BTC": "Deribit", "XAU": "GLD/IAU→GC", "EUR": "FXE→EUR"}
 
 
 def _now_ms():
@@ -71,23 +71,52 @@ def fetch_btc(prev):
 
 
 def fetch_gold(prev):
-    opt = G.gld_snapshot()
-    if not opt:
-        return None, "ดึง options GLD ไม่ได้ (Yahoo บล็อก/rate limit หรือตลาดปิด)"
-    if opt["anomalous"]:
-        return None, "options GLD งวดนี้เพี้ยน (OI บาง/ผิดรูป)"
-    am = G.gold_mult()
-    if not am:
-        return None, "หาตัวคูณ GLD→GC ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"
-    m = am["mult"]
-    g, note = _gex_part(G.gld_gex(0.20), prev)          # gld_gex คืนสเกลทองมาแล้ว
+    """ลองทุกแหล่งใน G.GOLD_OPTION_SOURCES (GLD, IAU) • ผ่านเกณฑ์หลายแหล่ง -> เลือก OI รวมสูงสุด
+    ไม่เฉลี่ย wall: wall คือ strike ที่ OI กองจริง ค่าเฉลี่ยของสอง strike คือราคาที่ไม่มี OI อยู่เลย"""
+    good, fails = [], []
+    for tk in G.GOLD_OPTION_SOURCES:
+        opt = G.gld_snapshot(tk)
+        if not opt:
+            fails.append(f"{tk}: ดึงไม่ได้")
+            continue
+        if opt["anomalous"]:
+            fails.append(f"{tk}: เพี้ยน ({opt.get('anom_reason') or 'ผิดรูป'})")
+            continue
+        am = G.gold_mult(tk)
+        if not am:
+            fails.append(f"{tk}: ไม่มีราคาปิดวันเดียวกันกับ GC")
+            continue
+        good.append((opt, am["mult"]))
+    if not good:
+        return None, " • ".join(fails) or "ดึง options ทองไม่ได้"
+    good.sort(key=lambda x: x[0].get("total_oi", 0), reverse=True)
+    opt, m = good[0]
+    tk = opt["ticker"]
+    notes = []
+    if len(good) > 1:
+        notes.append(f"เลือก {tk} (OI {opt['total_oi']:,.0f} > {good[1][0]['ticker']} {good[1][0]['total_oi']:,.0f})")
+    elif fails:
+        notes.append("สำรอง: " + " • ".join(fails))
+    if opt.get("concentrated"):
+        notes.append("OI กองที่ strike เดียว")
+    # GEX: ใช้แหล่งเดียวกับ walls ก่อน คำนวณไม่ได้ค่อยลองแหล่งอื่น (ไม่เฉลี่ย เพราะ IV คนละกอง)
+    gx = None
+    for o, _ in good:
+        gx = G.gld_gex(0.20, o["ticker"])
+        if gx:
+            if o["ticker"] != tk:
+                notes.append(f"GEX จาก {o['ticker']}")
+            break
+    g, gnote = _gex_part(gx, prev)
+    if gnote:
+        notes.append(gnote)
     q = G.gold_quote(G.primary)                          # ราคา GC ที่ใช้สเกลเส้น (Yahoo GC=F)
-    snap = {"ts_ms": _now_ms(), "source": "GLD→GC", "expiry": opt["expiry"],
+    snap = {"ts_ms": _now_ms(), "source": f"{tk}→GC", "expiry": opt["expiry"],
             "dte": G._dte_gold(opt["expiry"]),
             "callWall": opt["callWall"] * m, "putWall": opt["putWall"] * m,
             "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g,
             **_ref(q["price"] if q else None, YAHOO_FUT_DELAY_MS)}
-    return snap, note
+    return snap, " • ".join(notes)
 
 
 def fetch_eur(prev):
@@ -95,7 +124,7 @@ def fetch_eur(prev):
     if not opt:
         return None, "ดึง options FXE ไม่ได้ (Yahoo บล็อก/rate limit หรือตลาดปิด)"
     if opt["anomalous"]:
-        return None, "options FXE งวดนี้บาง/เพี้ยน (FXE ลิควิดน้อย เป็นปกติ)"
+        return None, f"FXE เพี้ยน ({opt.get('anom_reason') or 'ผิดรูป'}) — FXE ลิควิดน้อย เป็นปกติ"
     am = E.eur_mult()
     if not am:
         return None, "หาตัวคูณ FXE→EUR ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"

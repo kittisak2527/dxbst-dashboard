@@ -16,6 +16,7 @@ GC_YF = "GC=F"
 XAU_TD = "XAU/USD"
 DXY_YF = "DX-Y.NYB"
 OPTIONS_TICKER = "GLD"
+GOLD_OPTION_SOURCES = ["GLD", "IAU"]   # Pine 3-in-1: ลองตามลำดับ ใช้ตัวที่ OI สูงสุดที่ผ่านเกณฑ์
 
 td_key = C.resolve_td_key("")
 primary = PRIMARY
@@ -62,21 +63,21 @@ def gold_pivot_ref(ref):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _opt_expiries_raw():
-    exps = C.with_retry(lambda: list(yf.Ticker(OPTIONS_TICKER).options))
+def _opt_expiries_raw(ticker=OPTIONS_TICKER):
+    exps = C.with_retry(lambda: list(yf.Ticker(ticker).options))
     if not exps:
         raise RuntimeError("empty expiries")      # ไม่ให้แคชลิสต์ว่าง
     return exps
 
 
-def opt_expiries():
-    return C.soft_call(("exp", OPTIONS_TICKER), _opt_expiries_raw, default=[])
+def opt_expiries(ticker=OPTIONS_TICKER):
+    return C.soft_call(("exp", ticker), lambda: _opt_expiries_raw(ticker), default=[])
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _opt_chain_raw(expiry):
+def _opt_chain_raw(expiry, ticker=OPTIONS_TICKER):
     def _f():
-        oc = yf.Ticker(OPTIONS_TICKER).option_chain(expiry)
+        oc = yf.Ticker(ticker).option_chain(expiry)
         cols = ["strike", "openInterest", "impliedVolatility"]
         c = oc.calls[cols].copy()
         p = oc.puts[cols].copy()
@@ -89,8 +90,8 @@ def _opt_chain_raw(expiry):
     return C.with_retry(_f)
 
 
-def opt_chain(expiry):
-    return C.soft_call(("chain", OPTIONS_TICKER, expiry), lambda: _opt_chain_raw(expiry))
+def opt_chain(expiry, ticker=OPTIONS_TICKER):
+    return C.soft_call(("chain", ticker, expiry), lambda: _opt_chain_raw(expiry, ticker))
 
 
 MIN_DTE = 3   # งวดที่เหลือ <= 3 วัน OI มักกองที่ strike ไกลราคา + หมดอายุแล้วเส้นไร้ความหมาย → ข้ามไปงวดถัดไป
@@ -118,16 +119,19 @@ def _pairs(df):
     return [{"strike": float(r.strike), "oi": float(r.openInterest)} for r in df.itertuples()]
 
 
-def gld_snapshot():
-    """คืน dict ตัวเลข options GLD (งวดรายเดือน) + ธงเพี้ยน"""
+def gld_snapshot(ticker=OPTIONS_TICKER):
+    """คืน dict ตัวเลข options ของ ETF ทอง (GLD เป็นค่าเริ่มต้น / IAU สำรอง) งวดรายเดือน + ธงเพี้ยนพร้อมเหตุผล"""
     try:
-        exps = opt_expiries()
+        exps = opt_expiries(ticker)
         me = pick_monthly(exps)
-        gdf = C.yf_daily(OPTIONS_TICKER)
+        gdf = C.yf_daily(ticker)
         spot = float(gdf["close"].iloc[-1]) if gdf is not None and len(gdf) else None
         if not me or spot is None:
             return None
-        calls, puts = opt_chain(me)
+        ch = opt_chain(me, ticker)
+        if not ch:
+            return None
+        calls, puts = ch
         totc, totp = float(calls["openInterest"].sum()), float(puts["openInterest"].sum())
         pcr = totp / totc if totc else 0.0
         lo, hi = spot * 0.8, spot * 1.2
@@ -138,30 +142,40 @@ def gld_snapshot():
         cw = float(c.loc[c.openInterest.idxmax(), "strike"])
         pw = float(p.loc[p.openInterest.idxmax(), "strike"])
         mp = C.max_pain(_pairs(c), _pairs(p))
-        anom = (totc + totp) < 1000 or pcr > 3 or (0 < pcr < 0.2) or (mp is not None and cw == pw == mp)
+        reasons = []
+        if (totc + totp) < 1000:
+            reasons.append(f"OI รวม {totc + totp:,.0f} < 1,000")
+        if pcr > 3 or (0 < pcr < 0.2):
+            reasons.append(f"PCR {pcr:.2f} ผิดปกติ")
+        if totc <= 0 or totp <= 0:
+            reasons.append("ฝั่ง call/put ไม่มี OI")
+        anom = bool(reasons)
+        # cw == pw == mp ไม่ถือว่าเพี้ยนแล้ว: OI กองที่ strike กลมเดียวเป็นเรื่องจริงได้ (เช่น GLD $400)
+        concentrated = mp is not None and cw == pw == mp
         return {"expiry": me, "spot": spot, "pcr": pcr, "callWall": cw,
-                "putWall": pw, "maxPain": mp, "anomalous": anom}
+                "putWall": pw, "maxPain": mp, "anomalous": anom, "anom_reason": " • ".join(reasons),
+                "concentrated": concentrated, "total_oi": totc + totp, "ticker": ticker}
     except Exception:
         return None
 
 
-def gold_mult():
-    """ตัวคูณ GLD→ทอง ล็อกที่ราคาปิดวันเดียวกัน (กัน Phantom Wall)"""
+def gold_mult(ticker=OPTIONS_TICKER):
+    """ตัวคูณ ETF→ทอง ล็อกที่ราคาปิดวันเดียวกัน (กัน Phantom Wall)"""
     under = C.td_daily(XAU_TD, td_key) if primary == "XAU" else C.yf_daily(GC_YF)
-    etf = C.yf_daily(OPTIONS_TICKER)
+    etf = C.yf_daily(ticker)
     return C.aligned_mult(under, etf)
 
 
-def gld_gex(pct=0.20):
-    """คำนวณ GEX ราย strike จาก GLD (impliedVolatility ของ Yahoo) แปลงเป็นสเกลทอง"""
+def gld_gex(pct=0.20, ticker=OPTIONS_TICKER):
+    """คำนวณ GEX ราย strike จาก ETF ทอง (impliedVolatility ของ Yahoo) แปลงเป็นสเกลทอง"""
     try:
-        me = pick_monthly(opt_expiries())
-        gdf = C.yf_daily(OPTIONS_TICKER)
+        me = pick_monthly(opt_expiries(ticker))
+        gdf = C.yf_daily(ticker)
         gld_spot = float(gdf["close"].iloc[-1]) if gdf is not None and len(gdf) else None
         q = gold_quote(primary)
         if not me or gld_spot is None or not q:
             return None
-        ch = opt_chain(me)
+        ch = opt_chain(me, ticker)
         if not ch:
             return None
         calls, puts = ch
@@ -181,7 +195,7 @@ def gld_gex(pct=0.20):
         if not gx:
             return None
         flip = C.gamma_flip(opts, gld_spot, T, lo, hi)
-        am = gold_mult()
+        am = gold_mult(ticker)
         if not am:
             return None
         mult = am["mult"]

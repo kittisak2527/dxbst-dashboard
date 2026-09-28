@@ -129,9 +129,19 @@ def fxe_snapshot():
         cw = float(c.loc[c.openInterest.idxmax(), "strike"])
         pw = float(p.loc[p.openInterest.idxmax(), "strike"])
         mp = C.max_pain(_pairs(c), _pairs(p))
-        anom = (totc + totp) < 200 or pcr > 3 or (0 < pcr < 0.2) or (mp is not None and cw == pw == mp)
+        reasons = []
+        if (totc + totp) < 200:
+            reasons.append(f"OI รวม {totc + totp:,.0f} < 200")
+        if pcr > 3 or (0 < pcr < 0.2):
+            reasons.append(f"PCR {pcr:.2f} ผิดปกติ")
+        if totc <= 0 or totp <= 0:
+            reasons.append("ฝั่ง call/put ไม่มี OI")
+        anom = bool(reasons)
+        # cw == pw == mp ไม่ถือว่าเพี้ยนแล้ว: OI กองที่ strike กลมเดียวเป็นเรื่องจริงได้ (เช่น GLD $400)
+        concentrated = mp is not None and cw == pw == mp
         return {"expiry": me, "spot": spot, "pcr": pcr, "callWall": cw,
-                "putWall": pw, "maxPain": mp, "anomalous": anom}
+                "putWall": pw, "maxPain": mp, "anomalous": anom, "anom_reason": " • ".join(reasons),
+                "concentrated": concentrated, "total_oi": totc + totp, "ticker": OPTIONS_TICKER}
     except Exception:
         return None
 
