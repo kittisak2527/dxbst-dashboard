@@ -129,19 +129,26 @@ def fxe_snapshot():
         cw = float(c.loc[c.openInterest.idxmax(), "strike"])
         pw = float(p.loc[p.openInterest.idxmax(), "strike"])
         mp = C.max_pain(_pairs(c), _pairs(p))
-        reasons = []
+        # แยกเหตุผลเป็น 2 ระดับ:
+        #   hard = ข้อมูลใช้ไม่ได้จริง (OI น้อย/ฝั่งใดฝั่งหนึ่งว่าง) → ห้ามใช้เด็ดขาด
+        #   skew = PCR สุดขั้ว → เกณฑ์ปกติไม่ผ่าน แต่ FXE เอียงฝั่ง put เป็นเรื่องจริงได้ → Pine 3-in-1 ใช้แบบผ่อนได้
+        hard, skew = [], []
         if (totc + totp) < 200:
-            reasons.append(f"OI รวม {totc + totp:,.0f} < 200")
-        if pcr > 3 or (0 < pcr < 0.2):
-            reasons.append(f"PCR {pcr:.2f} ผิดปกติ")
+            hard.append(f"OI รวม {totc + totp:,.0f} < 200")
         if totc <= 0 or totp <= 0:
-            reasons.append("ฝั่ง call/put ไม่มี OI")
-        anom = bool(reasons)
+            hard.append("ฝั่ง call/put ไม่มี OI")
+        if pcr > 3 or (0 < pcr < 0.2):
+            skew.append(f"PCR {pcr:.2f} ผิดปกติ")
+        reasons = hard + skew
+        anom = bool(reasons)                      # เกณฑ์ปกติ (หน้า EUR/USD เดิมใช้ค่านี้เหมือนเดิม)
+        relaxable = anom and not hard             # ติดแค่ PCR → ผ่อนได้
+        weak_side = ("call" if pcr > 3 else "put") if skew else ""
         # cw == pw == mp ไม่ถือว่าเพี้ยนแล้ว: OI กองที่ strike กลมเดียวเป็นเรื่องจริงได้ (เช่น GLD $400)
         concentrated = mp is not None and cw == pw == mp
         return {"expiry": me, "spot": spot, "pcr": pcr, "callWall": cw,
                 "putWall": pw, "maxPain": mp, "anomalous": anom, "anom_reason": " • ".join(reasons),
-                "concentrated": concentrated, "total_oi": totc + totp, "ticker": OPTIONS_TICKER}
+                "concentrated": concentrated, "total_oi": totc + totp, "ticker": OPTIONS_TICKER,
+                "relaxable": relaxable, "weak_side": weak_side}
     except Exception:
         return None
 

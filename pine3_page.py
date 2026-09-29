@@ -120,18 +120,32 @@ def fetch_gold(prev):
 
 
 def fetch_eur(prev):
+    """ลำดับ: เกณฑ์ปกติก่อน (standby ไว้ตลอด) → ไม่ผ่านเพราะ PCR อย่างเดียว → โหมดผ่อน + บอกฝั่งที่อ่อน
+    ข้อมูลพังจริง (OI น้อย / ฝั่งใดว่าง) ไม่ใช้เด็ดขาด"""
     opt = E.fxe_snapshot()
     if not opt:
         return None, "ดึง options FXE ไม่ได้ (Yahoo บล็อก/rate limit หรือตลาดปิด)"
+    relaxed = False
     if opt["anomalous"]:
-        return None, f"FXE เพี้ยน ({opt.get('anom_reason') or 'ผิดรูป'}) — FXE ลิควิดน้อย เป็นปกติ"
+        if not opt.get("relaxable"):
+            return None, f"FXE เพี้ยน ({opt.get('anom_reason') or 'ผิดรูป'}) — FXE ลิควิดน้อย เป็นปกติ"
+        relaxed = True
     am = E.eur_mult()
     if not am:
         return None, "หาตัวคูณ FXE→EUR ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"
     m = am["mult"]
-    g, note = _gex_part(E.fxe_gex(0.20), prev)          # fxe_gex คืนสเกล EUR มาแล้ว
+    g, gnote = _gex_part(E.fxe_gex(0.20), prev)         # fxe_gex คืนสเกล EUR มาแล้ว
     q = E.eur_quote()                                    # ราคา EUR spot ที่ใช้สเกลเส้น
-    snap = {"ts_ms": _now_ms(), "source": "FXE→EUR", "expiry": opt["expiry"],
+    notes = []
+    src = "FXE→EUR"
+    if relaxed:
+        side = "Call" if opt.get("weak_side") == "call" else "Put"
+        notes.append(f"โหมดผ่อน: PCR {opt['pcr']:.1f} → {side} Wall อ่อน")
+        src = f"FXE→EUR • {side} Wall อ่อน"
+    if gnote:
+        notes.append(gnote)
+    note = " • ".join(notes)
+    snap = {"ts_ms": _now_ms(), "source": src, "expiry": opt["expiry"],
             "dte": E._dte_eur(opt["expiry"]),
             "callWall": opt["callWall"] * m, "putWall": opt["putWall"] * m,
             "maxPain": opt["maxPain"] * m if opt["maxPain"] else None, **g,
