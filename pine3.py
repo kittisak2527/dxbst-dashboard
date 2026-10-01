@@ -81,6 +81,7 @@ PINE_BODY = r'''
 grpL     = "เส้น"
 adjBasis = input.bool(true,  "ปรับสเกล basis อัตโนมัติ (GC→XAU spot • spot→6E)", group=grpL)
 showLbl  = input.bool(true,  "แสดงป้ายราคา", group=grpL)
+lblOff   = input.int(15, "ระยะป้ายจากแท่งล่าสุด (แท่ง) • เส้นจบตรงป้าย", minval=3, maxval=200, group=grpL)
 mergePct = input.float(0.10, "รวมป้ายเมื่อเส้นห่างกันไม่เกิน %", minval=0.0, step=0.05, group=grpL) / 100
 grpS     = "อายุข้อมูล"
 warnH    = input.float(30, "เหลือง เมื่อเก่ากว่า (ชม.)", minval=1, group=grpS)
@@ -89,6 +90,7 @@ grpF       = "FVG / Imbalance"
 fvgOn      = input.bool(true,  "แสดงโซน FVG", group=grpF)
 fvgLvlOnly = input.bool(true,  "แสดงเฉพาะโซนที่ทับเส้น positioning", group=grpF)
 fvgKeep    = input.int(8, "เก็บโซนล่าสุด (จำนวน)", minval=1, maxval=20, group=grpF)
+fvgDelMit  = input.bool(true,  "ลบโซนเมื่อแท่งปิดทะลุทั้งโซน", group=grpF)
 fvgMinPct  = input.float(0.03, "ขนาดโซนขั้นต่ำ %", minval=0.0, step=0.01, group=grpF) / 100
 lvlTolPct  = input.float(0.15, "ระยะนับว่าทับเส้น %", minval=0.01, step=0.05, group=grpF) / 100
 grpA     = "แจ้งเตือน"
@@ -210,7 +212,7 @@ if barstate.islast
             n  = array.get(keyN, i)
             c  = array.get(keyK, i)
             st = n == "Max Pain" ? line.style_dotted : (n == "Call Wall" or n == "Put Wall") ? line.style_dashed : line.style_solid
-            array.push(lns, line.new(bar_index - 1, v, bar_index, v, extend=extend.both, color=c, width=array.get(keyW, i), style=st))
+            array.push(lns, line.new(bar_index - 1, v, bar_index + lblOff, v, extend=extend.left, color=c, width=array.get(keyW, i), style=st))
         if showLbl
             used = array.new_bool(nKeys, false)
             for i = 0 to nKeys - 1
@@ -226,7 +228,7 @@ if barstate.islast
                     txt := txt + " " + str.tostring(v, format.mintick)
                     if cdOnMP and cdTxt != "" and str.contains(txt, "Max Pain")
                         txt := txt + " • ⏳ " + cdTxt
-                    array.push(lbs, label.new(bar_index + 6, v, txt, style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
+                    array.push(lbs, label.new(bar_index + lblOff, v, txt, style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
 
 // ═══════════════════════ ตารางสถานะ ═══════════════════════
 ageH   = tsSel > 0 ? (timenow - tsSel) / 3600000.0 : 0.0
@@ -281,6 +283,7 @@ var float[]  fTop  = array.new_float()
 var float[]  fBot  = array.new_float()
 var bool[]   fBull = array.new_bool()
 var bool[]   fIn   = array.new_bool()
+var int[]    fBar  = array.new_int()
 var string[] fName = array.new_string()
 
 f_lvlHit(float[] P, string[] N, float t, float b) =>
@@ -316,6 +319,7 @@ if fvgOn and (newBull or newBear)
         array.push(fBull, newBull)
         array.push(fIn, false)
         array.push(fName, nm)
+        array.push(fBar, bar_index)
         while array.size(fBox) > fvgKeep
             box.delete(array.shift(fBox))
             array.shift(fTop)
@@ -323,6 +327,7 @@ if fvgOn and (newBull or newBear)
             array.shift(fBull)
             array.shift(fIn)
             array.shift(fName)
+            array.shift(fBar)
 
 if barstate.isconfirmed and array.size(fBox) > 0
     for i = array.size(fBox) - 1 to 0
@@ -330,15 +335,20 @@ if barstate.isconfirmed and array.size(fBox) > 0
         b  = array.get(fBot, i)
         bx = array.get(fBox, i)
         box.set_right(bx, bar_index + 3)
-        inside = low <= t and high >= b
+        // แตะโซน = แท่งหลังสร้างโซนมี high/low เข้าไปในกล่อง (แค่สัมผัสก็นับ)
+        inside = bar_index > array.get(fBar, i) and low <= t and high >= b
         if inside and not array.get(fIn, i)
             array.set(fIn, i, true)
+            // ถูกใช้งานแล้ว → จางลง (ยังเห็นตำแหน่ง แต่ไม่แย่งสายตา)
+            box.set_bgcolor(bx, color.new(color.gray, 92))
+            box.set_border_color(bx, color.new(color.gray, 75))
+            box.set_text_color(bx, color.new(color.white, 65))
             if alertsOn
                 dir = array.get(fBull, i) ? "ขาขึ้น" : "ขาลง"
                 tag = array.get(fName, i) != "" ? " ⭐ ที่ " + array.get(fName, i) : ""
                 alert("🎯 " + assetLbl + " เข้าโซน FVG " + dir + tag + " • โหมด" + modeTh, alert.freq_once_per_bar_close)
-        mit = array.get(fBull, i) ? close < b : close > t
-        if mit
+        mit = bar_index > array.get(fBar, i) and (array.get(fBull, i) ? close < b : close > t)
+        if fvgDelMit and mit
             box.delete(bx)
             array.remove(fBox, i)
             array.remove(fTop, i)
@@ -346,4 +356,5 @@ if barstate.isconfirmed and array.size(fBox) > 0
             array.remove(fBull, i)
             array.remove(fIn, i)
             array.remove(fName, i)
+            array.remove(fBar, i)
 '''
