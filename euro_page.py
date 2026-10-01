@@ -602,7 +602,8 @@ def body():
     st.divider(); _safe(render_options, "Options")
     st.divider(); _safe(render_gex, "GEX")
     st.divider(); _safe(render_fakeout, "Fake-out")
-    st.divider(); _safe(render_pinescript, "PineScript")
+    st.divider(); st.info("📋 โค้ด PineScript ย้ายไปรวมที่หน้า **🧩 Pine 3-in-1** แล้ว (อินดี้ตัวเดียว ใช้ได้ทั้ง ทอง / BTC / ยูโร "
+                             "• ปรับ basis • บอกอายุข้อมูล • โหมดคำนวณสด) — โค้ดแยกรายสินทรัพย์แบบเดิมเลิกใช้แล้ว")
     st.divider()
     st.caption("⚠️ ข้อมูลเพื่อการศึกษา • FXE เป็น proxy ลิควิดน้อย • ไม่ใช่ราคาสดโบรกเกอร์ • ไม่ใช่คำแนะนำการลงทุน")
 

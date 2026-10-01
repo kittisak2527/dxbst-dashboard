@@ -176,38 +176,221 @@ modeKnown = matched and hasD and (not na(flipL) or gsign != 0)
 dampen    = not na(flipL) ? close >= flipL : gsign > 0
 modeTh    = dampen ? "หน่วง (มักเด้ง)" : "เร่ง (มักทะลุ)"
 
+// ═══════════════════════ A/V Pivot (TF ใหญ่) — นิยามแท่งคู่ตาม DTX v2.3a ═══════════════════════
+grpV      = "A/V Pivot (TF ใหญ่)"
+avOn      = input.bool(true, "แสดงโซน A/V", group=grpV)
+avTf      = input.timeframe("240", "TF ที่ใช้ตรวจ", group=grpV)
+avLineMd  = input.string("zMid (ตาม DTX)", "เส้นตัดสินในโซน", options=["zMid (ตาม DTX)", "ขอบที่บรรจบ", "จุดที่ถูกทดสอบ"], group=grpV)
+avShowN   = input.int(2, "แสดงโซนด้านบน / ล่าง อย่างละ", minval=1, maxval=4, group=grpV)
+avBodyPct = input.float(0.25, "② เนื้อเทียน ≥ สัดส่วนของ range", step=0.05, group=grpV)
+avBodyAtr = input.float(0.30, "② เนื้อเทียน ≥ × ATR(14)", step=0.05, group=grpV)
+avExtLen  = input.int(6, "③ ต้องเป็นยอด/ฐานของ (แท่ง)", minval=2, group=grpV)
+avMaxH    = input.float(2.0, "④ ความสูงโซนสูงสุด × ATR", step=0.1, group=grpV)
+avKill    = input.float(0.6, "⑥ โซนตายเมื่อปิดเลยขอบ × ATR", step=0.1, group=grpV)
+avReqExt  = input.bool(false, "⑤ กรองเพิ่ม: EXT (ชิดสุดของ 100 แท่ง)", group=grpV)
+avReqSwp  = input.bool(false, "⑤ กรองเพิ่ม: SWEEP (แหย่เลยสวิงเก่าแล้วปิดกลับ)", group=grpV)
+avReqPos  = input.bool(false, "⑤ กรองเพิ่ม: POS (ซ้อนเส้น positioning)", group=grpV)
+avPadAtr  = 0.35
+avMaxZ    = 12
+
+// คำนวณบนแท่ง TF ใหญ่ แล้วส่ง "แท่งที่ปิดแล้ว" ([1] + lookahead_on = ไม่ repaint)
+f_avHTF() =>
+    a     = ta.atr(14)
+    b0    = math.abs(close - open)
+    b1    = math.abs(close[1] - open[1])
+    r0    = high - low
+    r1    = high[1] - low[1]
+    solid = b0 >= avBodyPct * r0 and b0 >= avBodyAtr * a and b1 >= avBodyPct * r1 and b1 >= avBodyAtr * a
+    hhN   = ta.highest(high, avExtLen)
+    llN   = ta.lowest(low, avExtLen)
+    isA   = close[1] > open[1] and close < open and solid and math.max(high, high[1]) >= hhN
+    isV   = close[1] < open[1] and close > open and solid and math.min(low, low[1]) <= llN
+    zT    = math.max(math.max(open, close), math.max(open[1], close[1]))
+    zB    = math.min(math.min(open, close), math.min(open[1], close[1]))
+    okH   = zT - zB <= avMaxH * a
+    hh100 = ta.highest(high, 100)
+    ll100 = ta.lowest(low, 100)
+    oldH  = ta.highest(high[4], 17)
+    oldL  = ta.lowest(low[4], 17)
+    ext   = isA ? hh100 - zT <= avPadAtr * a : isV ? zB - ll100 <= avPadAtr * a : false
+    swp   = isA ? (math.max(high, high[1]) > oldH and close < oldH) : isV ? (math.min(low, low[1]) < oldL and close > oldL) : false
+    kind  = okH ? (isA ? 1 : isV ? -1 : 0) : 0
+    [kind[1], zT[1], zB[1], a[1], ext[1], swp[1], high[1], low[1], close[1]]
+
+avSec    = timeframe.in_seconds(avTf)
+avActive = avOn and timeframe.in_seconds() <= avSec
+avTfName = avSec >= 604800 ? "W" : avSec >= 86400 ? "D" : avSec >= 3600 ? "H" + str.tostring(math.round(avSec / 3600)) : "M" + str.tostring(math.round(avSec / 60))
+[hK, hT, hB, hAtr, hExt, hSwp, hH, hL, hC] = request.security(syminfo.tickerid, avTf, f_avHTF(), lookahead=barmerge.lookahead_on)
+newHtf = ta.change(time(avTf)) != 0
+
+var int[]    zK   = array.new_int()
+var float[]  zTp  = array.new_float()
+var float[]  zBt  = array.new_float()
+var float[]  zAt  = array.new_float()
+var int[]    zTc  = array.new_int()
+var int[]    zId  = array.new_int()
+var int[]    zBi  = array.new_int()
+var float[]  tVal = array.new_float()
+var int[]    tId  = array.new_int()
+var int      zNext = 0
+
+f_posHit(float t, float b, float pad) =>
+    bool hit = false
+    for v in array.from(flipL, callL, putL, mpL, gexCL, gexPL)
+        if not na(v) and v >= b - pad and v <= t + pad
+            hit := true
+    hit
+
+f_zDel(int i) =>
+    array.remove(zK, i)
+    array.remove(zTp, i)
+    array.remove(zBt, i)
+    array.remove(zAt, i)
+    array.remove(zTc, i)
+    array.remove(zId, i)
+    array.remove(zBi, i)
+    0
+
+if avActive and newHtf
+    // 1) อัปเดตโซนเดิมด้วยแท่ง TF ใหญ่ที่เพิ่งปิด: ตาย / ถูกทดสอบ
+    if array.size(zK) > 0
+        for i = array.size(zK) - 1 to 0
+            k = array.get(zK, i)
+            t = array.get(zTp, i)
+            b = array.get(zBt, i)
+            a = array.get(zAt, i)
+            dead = k == 1 ? hC > t + avKill * a : hC < b - avKill * a
+            if dead
+                f_zDel(i)
+            else
+                touch = k == 1 ? (hH >= b and hC <= t) : (hL <= t and hC >= b)
+                if touch
+                    array.set(zTc, i, array.get(zTc, i) + 1)
+                    array.push(tVal, k == 1 ? math.min(hH, t) : math.max(hL, b))
+                    array.push(tId, array.get(zId, i))
+                    while array.size(tVal) > 300
+                        array.shift(tVal)
+                        array.shift(tId)
+    // 2) โซนใหม่ (①–④ ผ่านแล้วจากฝั่ง TF ใหญ่ • ⑤ กรองเพิ่มเมื่อเปิด)
+    if hK != 0 and not na(hT) and not na(hAtr)
+        anyReq = avReqExt or avReqSwp or avReqPos
+        why = (avReqExt and hExt) ? "EXT" : (avReqSwp and hSwp) ? "SWP" : (avReqPos and f_posHit(hT, hB, avPadAtr * hAtr)) ? "POS" : ""
+        if not anyReq or why != ""
+            array.push(zK, hK)
+            array.push(zTp, hT)
+            array.push(zBt, hB)
+            array.push(zAt, hAtr)
+            array.push(zTc, 0)
+            array.push(zId, zNext)
+            array.push(zBi, bar_index)
+            zNext += 1
+            while array.size(zK) > avMaxZ
+                f_zDel(0)
+
+// เส้นตัดสินในโซน
+f_zLine(int i) =>
+    k = array.get(zK, i)
+    t = array.get(zTp, i)
+    b = array.get(zBt, i)
+    float r = (t + b) / 2
+    if avLineMd == "ขอบที่บรรจบ"
+        r := k == 1 ? t : b
+    else if avLineMd == "จุดที่ถูกทดสอบ" and array.get(zTc, i) >= 2
+        id   = array.get(zId, i)
+        vals = array.new_float()
+        if array.size(tId) > 0
+            for j = 0 to array.size(tId) - 1
+                if array.get(tId, j) == id
+                    array.push(vals, array.get(tVal, j))
+        if array.size(vals) >= 2
+            r := array.median(vals)
+    r
+
+// เลือกโซนที่ใกล้ราคา ด้านบน/ล่าง อย่างละ avShowN
+selI = array.new_int()
+selV = array.new_float()
+if avActive and array.size(zK) > 0
+    upD = array.new_float()
+    upI = array.new_int()
+    dnD = array.new_float()
+    dnI = array.new_int()
+    for i = 0 to array.size(zK) - 1
+        v = f_zLine(i)
+        if v >= close
+            array.push(upD, v - close)
+            array.push(upI, i)
+        else
+            array.push(dnD, close - v)
+            array.push(dnI, i)
+    if array.size(upD) > 0
+        o = array.sort_indices(upD, order.ascending)
+        for j = 0 to math.min(avShowN, array.size(o)) - 1
+            ii = array.get(upI, array.get(o, j))
+            array.push(selI, ii)
+            array.push(selV, f_zLine(ii))
+    if array.size(dnD) > 0
+        o = array.sort_indices(dnD, order.ascending)
+        for j = 0 to math.min(avShowN, array.size(o)) - 1
+            ii = array.get(dnI, array.get(o, j))
+            array.push(selI, ii)
+            array.push(selV, f_zLine(ii))
+colA = color.rgb(239, 83, 80)
+colV = color.rgb(38, 166, 154)
+
 // ═══════════════════════ รวมเส้นเป็น array ═══════════════════════
-f_push(float[] P, string[] N, color[] K, int[] W, float v, string n, color c, int w) =>
+f_push(float[] P, string[] N, color[] K, int[] W, bool[] D, float v, string n, color c, int w, bool d) =>
     if not na(v)
         array.push(P, v)
         array.push(N, n)
         array.push(K, c)
         array.push(W, w)
+        array.push(D, d)
     0
 
 keyP = array.new_float()
 keyN = array.new_string()
 keyK = array.new_color()
 keyW = array.new_int()
+keyD = array.new_bool()      // true = วาดเส้นเต็มแบบ positioning • false = A/V (วาดเป็นโซนแยก)
 if matched and hasD
-    f_push(keyP, keyN, keyK, keyW, flipL, "Gamma Flip",    color.fuchsia, 2)
-    f_push(keyP, keyN, keyK, keyW, callL, "Call Wall",     color.red,     2)
-    f_push(keyP, keyN, keyK, keyW, putL,  "Put Wall",      color.green,   2)
-    f_push(keyP, keyN, keyK, keyW, mpL,   "Max Pain",      color.yellow,  2)
-    f_push(keyP, keyN, keyK, keyW, gexCL, "GEX Call Wall", color.orange,  1)
-    f_push(keyP, keyN, keyK, keyW, gexPL, "GEX Put Wall",  color.aqua,    1)
+    f_push(keyP, keyN, keyK, keyW, keyD, flipL, "Gamma Flip",    color.fuchsia, 2, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, callL, "Call Wall",     color.red,     2, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, putL,  "Put Wall",      color.green,   2, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, mpL,   "Max Pain",      color.yellow,  2, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, gexCL, "GEX Call Wall", color.orange,  1, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, gexPL, "GEX Put Wall",  color.aqua,    1, true)
+if array.size(selI) > 0
+    for j = 0 to array.size(selI) - 1
+        ii = array.get(selI, j)
+        k  = array.get(zK, ii)
+        tc = array.get(zTc, ii)
+        f_push(keyP, keyN, keyK, keyW, keyD, array.get(selV, j), (k == 1 ? "A-" : "V-") + avTfName + (tc > 0 ? " ×" + str.tostring(tc) : ""), k == 1 ? colA : colV, 1, false)
 nKeys = array.size(keyP)
 
 // ═══════════════════════ วาดเส้น + ป้าย (แท่งล่าสุด) ═══════════════════════
 var line[]  lns = array.new_line()
 var label[] lbs = array.new_label()
+var box[]   avb = array.new_box()
 if barstate.islast
     while array.size(lns) > 0
         line.delete(array.pop(lns))
     while array.size(lbs) > 0
         label.delete(array.pop(lbs))
+    while array.size(avb) > 0
+        box.delete(array.pop(avb))
+    // โซน A/V: กล่องเนื้อเทียน + เส้นตัดสิน (จางลงเมื่อถูกทดสอบแล้ว)
+    if array.size(selI) > 0
+        for j = 0 to array.size(selI) - 1
+            ii = array.get(selI, j)
+            c  = array.get(zK, ii) == 1 ? colA : colV
+            tc = array.get(zTc, ii)
+            x0 = math.max(array.get(zBi, ii), bar_index - 4900)   // กันวัตถุย้อนไกลเกินขีดจำกัดของ TradingView
+            array.push(avb, box.new(x0, array.get(zTp, ii), bar_index + lblOff, array.get(zBt, ii), border_color=color.new(c, tc > 0 ? 80 : 60), bgcolor=color.new(c, tc > 0 ? 94 : 87)))
+            array.push(lns, line.new(x0, array.get(selV, j), bar_index + lblOff, array.get(selV, j), color=color.new(c, tc > 0 ? 50 : 15), width=1, style=line.style_dashed))
     if nKeys > 0
         for i = 0 to nKeys - 1
+            if not array.get(keyD, i)
+                continue
             v  = array.get(keyP, i)
             n  = array.get(keyN, i)
             c  = array.get(keyK, i)
