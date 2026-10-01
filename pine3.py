@@ -91,6 +91,7 @@ fvgOn      = input.bool(true,  "แสดงโซน FVG", group=grpF)
 fvgLvlOnly = input.bool(true,  "แสดงเฉพาะโซนที่ทับเส้น positioning", group=grpF)
 fvgKeep    = input.int(8, "เก็บโซนล่าสุด (จำนวน)", minval=1, maxval=20, group=grpF)
 fvgDelMit  = input.bool(true,  "ลบโซนเมื่อแท่งปิดทะลุทั้งโซน", group=grpF)
+fvgFarAtr  = input.float(6.0, "ลบโซนที่ห่างราคาเกิน × ATR (TF ใหญ่ของ A/V)", step=0.5, group=grpF)
 fvgMinPct  = input.float(0.03, "ขนาดโซนขั้นต่ำ %", minval=0.0, step=0.01, group=grpF) / 100
 lvlTolPct  = input.float(0.15, "ระยะนับว่าทับเส้น %", minval=0.01, step=0.05, group=grpF) / 100
 grpA     = "แจ้งเตือน"
@@ -436,7 +437,11 @@ if barstate.islast
                     if i < nKeys - 1
                         for j = i + 1 to nKeys - 1
                             tol = v * mergePct
-                            if not array.get(used, j) and array.get(keyLo, j) <= array.get(keyHi, i) + tol and array.get(keyHi, j) >= array.get(keyLo, i) - tol
+                            // A/V กับ A/V → รวมเมื่อเส้นชิดกันจริงเท่านั้น (กันป้ายของอีกโซนหาย)
+                            // มีเส้น positioning เกี่ยวข้อง → รวมเมื่อเส้นอยู่ในขอบโซน (confluence จริง)
+                            bothAV = not array.get(keyD, i) and not array.get(keyD, j)
+                            hit = bothAV ? math.abs(array.get(keyP, j) - v) <= tol : array.get(keyLo, j) <= array.get(keyHi, i) + tol and array.get(keyHi, j) >= array.get(keyLo, i) - tol
+                            if not array.get(used, j) and hit
                                 txt := txt + " · " + array.get(keyN, j)
                                 array.set(used, j, true)
                     txt := txt + " " + str.tostring(v, format.mintick)
@@ -562,7 +567,8 @@ if barstate.isconfirmed and array.size(fBox) > 0
                 tag = array.get(fName, i) != "" ? " ⭐ ที่ " + array.get(fName, i) : ""
                 alert("🎯 " + assetLbl + " เข้าโซน FVG " + dir + tag + " • โหมด" + modeTh, alert.freq_once_per_bar_close)
         mit = bar_index > array.get(fBar, i) and (array.get(fBull, i) ? close < b : close > t)
-        if fvgDelMit and mit
+        far = not na(hAtr) and math.abs((t + b) / 2 - close) > fvgFarAtr * hAtr
+        if (fvgDelMit and mit) or far
             box.delete(bx)
             array.remove(fBox, i)
             array.remove(fTop, i)
