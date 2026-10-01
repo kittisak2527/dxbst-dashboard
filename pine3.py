@@ -181,7 +181,10 @@ modeTh    = dampen ? "หน่วง (มักเด้ง)" : "เร่ง (
 grpV      = "A/V Pivot (TF ใหญ่)"
 avOn      = input.bool(true, "แสดงโซน A/V", group=grpV)
 avTf      = input.timeframe("240", "TF ที่ใช้ตรวจ", group=grpV)
-avLineMd  = input.string("zMid (ตาม DTX)", "เส้นตัดสินในโซน", options=["zMid (ตาม DTX)", "ขอบที่บรรจบ", "จุดที่ถูกทดสอบ"], group=grpV)
+avStyle   = input.string("เส้นที่ยอด/ฐาน", "รูปแบบแสดง", options=["เส้นที่ยอด/ฐาน", "โซน + เส้น"], group=grpV)
+avLineMd  = input.string("ยอดไส้ (High/Low)", "ระดับของเส้น", options=["ยอดไส้ (High/Low)", "ขอบเนื้อเทียน", "zMid (ตาม DTX)", "จุดที่ถูกทดสอบ"], group=grpV)
+colA      = input.color(color.rgb(158, 216, 234), "สีเส้น A (ยอด)", group=grpV)
+colV      = input.color(color.rgb(170, 25, 40), "สีเส้น V (ฐาน)", group=grpV)
 avShowN   = input.int(2, "แสดงโซนด้านบน / ล่าง อย่างละ", minval=1, maxval=4, group=grpV)
 avBodyPct = input.float(0.25, "② เนื้อเทียน ≥ สัดส่วนของ range", step=0.05, group=grpV)
 avBodyAtr = input.float(0.30, "② เนื้อเทียน ≥ × ATR(14)", step=0.05, group=grpV)
@@ -217,18 +220,20 @@ f_avHTF() =>
     ext   = isA ? hh100 - zT <= avPadAtr * a : isV ? zB - ll100 <= avPadAtr * a : false
     swp   = isA ? (math.max(high, high[1]) > oldH and close < oldH) : isV ? (math.min(low, low[1]) < oldL and close > oldL) : false
     kind  = okH ? (isA ? 1 : isV ? -1 : 0) : 0
-    [kind[1], zT[1], zB[1], a[1], ext[1], swp[1], high[1], low[1], close[1]]
+    wx    = isA ? math.max(high, high[1]) : math.min(low, low[1])    // ยอดไส้ของรูป A / ฐานไส้ของรูป V
+    [kind[1], zT[1], zB[1], a[1], ext[1], swp[1], high[1], low[1], close[1], wx[1]]
 
 avSec    = timeframe.in_seconds(avTf)
 avActive = avOn and timeframe.in_seconds() <= avSec
 avTfName = avSec >= 604800 ? "W" : avSec >= 86400 ? "D" : avSec >= 3600 ? "H" + str.tostring(math.round(avSec / 3600)) : "M" + str.tostring(math.round(avSec / 60))
-[hK, hT, hB, hAtr, hExt, hSwp, hH, hL, hC] = request.security(syminfo.tickerid, avTf, f_avHTF(), lookahead=barmerge.lookahead_on)
+[hK, hT, hB, hAtr, hExt, hSwp, hH, hL, hC, hX] = request.security(syminfo.tickerid, avTf, f_avHTF(), lookahead=barmerge.lookahead_on)
 newHtf = ta.change(time(avTf)) != 0
 
 var int[]    zK   = array.new_int()
 var float[]  zTp  = array.new_float()
 var float[]  zBt  = array.new_float()
 var float[]  zAt  = array.new_float()
+var float[]  zX   = array.new_float()     // ยอดไส้ (A) / ฐานไส้ (V)
 var int[]    zTc  = array.new_int()
 var int[]    zSt  = array.new_int()     // 0 = เพิ่งเกิด (ยังไม่ออกจากโซน) • 1 = ออกไปแล้ว รอทดสอบ • 2 = กำลังถูกทดสอบ
 var int[]    zId  = array.new_int()
@@ -249,6 +254,7 @@ f_zDel(int i) =>
     array.remove(zTp, i)
     array.remove(zBt, i)
     array.remove(zAt, i)
+    array.remove(zX, i)
     array.remove(zTc, i)
     array.remove(zSt, i)
     array.remove(zId, i)
@@ -263,7 +269,8 @@ if avActive and newHtf
             t = array.get(zTp, i)
             b = array.get(zBt, i)
             a = array.get(zAt, i)
-            dead = k == 1 ? hC > t + avKill * a : hC < b - avKill * a
+            x    = array.get(zX, i)
+            dead = k == 1 ? hC > math.max(t, x) + avKill * a : hC < math.min(b, x) - avKill * a
             if dead
                 f_zDel(i)
             else
@@ -304,6 +311,7 @@ if avActive and newHtf
             array.push(zTp, hT)
             array.push(zBt, hB)
             array.push(zAt, hAtr)
+            array.push(zX, hX)
             array.push(zTc, 0)
             array.push(zSt, 0)
             array.push(zId, zNext)
@@ -318,7 +326,9 @@ f_zLine(int i) =>
     t = array.get(zTp, i)
     b = array.get(zBt, i)
     float r = (t + b) / 2
-    if avLineMd == "ขอบที่บรรจบ"
+    if avLineMd == "ยอดไส้ (High/Low)"
+        r := array.get(zX, i)
+    else if avLineMd == "ขอบเนื้อเทียน"
         r := k == 1 ? t : b
     else if avLineMd == "จุดที่ถูกทดสอบ" and array.get(zTc, i) >= 2
         id   = array.get(zId, i)
@@ -361,8 +371,6 @@ if avActive and array.size(zK) > 0
             ii = array.get(dnI, array.get(o, j))
             array.push(selI, ii)
             array.push(selV, f_zLine(ii))
-colA = color.rgb(239, 83, 80)
-colV = color.rgb(38, 166, 154)
 
 // ═══════════════════════ รวมเส้นเป็น array ═══════════════════════
 f_push(float[] P, string[] N, color[] K, int[] W, bool[] D, float[] LO, float[] HI, float v, string n, color c, int w, bool d, float lo, float hi) =>
@@ -395,7 +403,7 @@ if array.size(selI) > 0
         ii = array.get(selI, j)
         k  = array.get(zK, ii)
         tc = array.get(zTc, ii)
-        f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, array.get(selV, j), (k == 1 ? "A-" : "V-") + avTfName + (tc > 0 ? " ×" + str.tostring(tc) : ""), k == 1 ? colA : colV, 1, false, array.get(zBt, ii), array.get(zTp, ii))
+        f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, array.get(selV, j), (k == 1 ? "A-" : "V-") + avTfName + (tc > 0 ? " ×" + str.tostring(tc) : ""), k == 1 ? colA : colV, 1, false, avStyle == "โซน + เส้น" ? array.get(zBt, ii) : na, avStyle == "โซน + เส้น" ? array.get(zTp, ii) : na)
 nKeys = array.size(keyP)
 
 // ═══════════════════════ วาดเส้น + ป้าย (แท่งล่าสุด) ═══════════════════════
@@ -416,8 +424,12 @@ if barstate.islast
             c  = array.get(zK, ii) == 1 ? colA : colV
             tc = array.get(zTc, ii)
             x0 = math.max(array.get(zBi, ii), bar_index - 4900)   // กันวัตถุย้อนไกลเกินขีดจำกัดของ TradingView
-            array.push(avb, box.new(x0, array.get(zTp, ii), bar_index + lblOff, array.get(zBt, ii), border_color=color.new(c, tc > 0 ? 80 : 60), bgcolor=color.new(c, tc > 0 ? 94 : 87)))
-            array.push(lns, line.new(x0, array.get(selV, j), bar_index + lblOff, array.get(selV, j), color=color.new(c, tc > 0 ? 50 : 15), width=1, style=line.style_dashed))
+            if avStyle == "โซน + เส้น"
+                array.push(avb, box.new(x0, array.get(zTp, ii), bar_index + lblOff, array.get(zBt, ii), border_color=color.new(c, tc > 0 ? 80 : 60), bgcolor=color.new(c, tc > 0 ? 94 : 87)))
+                array.push(lns, line.new(x0, array.get(selV, j), bar_index + lblOff, array.get(selV, j), color=color.new(c, tc > 0 ? 50 : 15), width=1, style=line.style_dashed))
+            else
+                // เส้นเดียว ลากจากจุดยอด/ฐานของรูป A/V ไปทางขวา (จางลงเมื่อถูกทดสอบแล้ว)
+                array.push(lns, line.new(x0, array.get(selV, j), bar_index + lblOff, array.get(selV, j), color=color.new(c, tc > 0 ? 40 : 0), width=2, style=line.style_solid))
     if nKeys > 0
         for i = 0 to nKeys - 1
             if not array.get(keyD, i)
