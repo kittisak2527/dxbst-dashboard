@@ -134,7 +134,13 @@ def fetch_eur(prev):
     if not am:
         return None, "หาตัวคูณ FXE→EUR ไม่ได้ (ไม่มีราคาปิดวันเดียวกัน)"
     m = am["mult"]
-    g, gnote = _gex_part(E.fxe_gex(0.20), prev)         # fxe_gex คืนสเกล EUR มาแล้ว
+    if relaxed:
+        # chain เอียงสุดขั้ว → Net GEX ติดลบเกือบทั้งช่วง Flip ไปตัดศูนย์ที่ขอบกรอบ = เส้นหลอก
+        # ไม่ใช้ GEX/Flip เลย (และไม่ยืมชุดเก่า) → บนกราฟขึ้น "โหมด: ไม่ทราบ" ซึ่งตรงความจริง
+        g = {"gexCall": None, "gexPut": None, "flip": None, "gexSign": 0, "gex_ts_ms": None}
+        gnote = "ไม่ใช้ GEX/Flip (chain เอียงเกินไป)"
+    else:
+        g, gnote = _gex_part(E.fxe_gex(0.20), prev)     # fxe_gex คืนสเกล EUR มาแล้ว
     q = E.eur_quote()                                    # ราคา EUR spot ที่ใช้สเกลเส้น
     notes = []
     src = "FXE→EUR"

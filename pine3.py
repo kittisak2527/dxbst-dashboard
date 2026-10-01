@@ -142,6 +142,12 @@ f_pxAt(int ts) =>
         p := close
     p
 pxAtRef = request.security(syminfo.tickerid, "5", f_pxAt(refTs))
+// วิธีที่ 1 (แม่นสุด): เทียบกับสัญลักษณ์อ้างอิงบน TradingView เอง ณ เวลาเดียวกัน
+//   ทอง → COMEX:GC1!  • ยูโร → FX:EURUSD   (ทั้งสองฝั่งมาจาก TV เวลาตรงกันแน่นอน ไม่พึ่งดีเลย์ของ Yahoo)
+tvRefSym = isXAU ? "COMEX:GC1!" : isEUR ? "FX:EURUSD" : syminfo.tickerid
+tvAtRef  = request.security(tvRefSym, "5", f_pxAt(refTs), ignore_invalid_symbol=true)
+useTvBasis   = refTs > 0 and not na(pxAtRef) and not na(tvAtRef) and tvAtRef > 0
+// วิธีที่ 2: เทียบกับราคา Yahoo ที่แดชบอร์ดฝังมา (สำรองเมื่อไม่มีข้อมูล GC1!/FX:EURUSD)
 useSnapBasis = not na(refPx) and refPx > 0 and not na(pxAtRef)
 
 // ── basis สำรอง: ราคาปิดวันก่อน (ใช้เมื่อ snapshot เก่ายังไม่มีราคาอ้างอิง) ──
@@ -150,8 +156,8 @@ refPrevD = request.security(refSym, "D", close[1], lookahead=barmerge.lookahead_
 chPrevD  = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
 dailyOK  = not na(refPrevD) and refPrevD > 0 and not na(chPrevD)
 
-rawRatio = (not adjBasis or isBTC) ? 1.0 : useSnapBasis ? pxAtRef / refPx : dailyOK ? chPrevD / refPrevD : 1.0
-basisHow = useSnapBasis ? "เทียบ ณ เวลาเจน" : dailyOK ? "ปิดวันก่อน" : "ไม่ปรับ"
+rawRatio = (not adjBasis or isBTC) ? 1.0 : useTvBasis ? pxAtRef / tvAtRef : useSnapBasis ? pxAtRef / refPx : dailyOK ? chPrevD / refPrevD : 1.0
+basisHow = useTvBasis ? "เทียบ " + (isXAU ? "GC1!" : "EURUSD") + " ณ เวลาเจน" : useSnapBasis ? "เทียบ Yahoo ณ เวลาเจน" : dailyOK ? "ปิดวันก่อน" : "ไม่ปรับ"
 ratio    = math.abs(rawRatio - 1.0) > 0.05 ? 1.0 : rawRatio      // กันข้อมูลเพี้ยน
 
 f_adj(v) => na(v) ? na : v * ratio
@@ -220,7 +226,7 @@ if barstate.islast
                     txt := txt + " " + str.tostring(v, format.mintick)
                     if cdOnMP and cdTxt != "" and str.contains(txt, "Max Pain")
                         txt := txt + " • ⏳ " + cdTxt
-                    array.push(lbs, label.new(bar_index + 3, v, txt, style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
+                    array.push(lbs, label.new(bar_index + 6, v, txt, style=label.style_label_left, color=color.new(c, 65), textcolor=color.white, size=size.small))
 
 // ═══════════════════════ ตารางสถานะ ═══════════════════════
 ageH   = tsSel > 0 ? (timenow - tsSel) / 3600000.0 : 0.0
@@ -302,7 +308,8 @@ if fvgOn and (newBull or newBear)
             box.set_text(bx, "⭐ FVG @ " + nm)
             box.set_text_color(bx, color.white)
             box.set_text_size(bx, size.tiny)
-            box.set_text_halign(bx, text.align_left)
+            box.set_text_halign(bx, text.align_right)    // ข้อความชิดขอบขวาของกล่อง ไม่ล้นไปทับป้ายราคา
+            box.set_text_valign(bx, text.align_bottom)
         array.push(fBox, bx)
         array.push(fTop, t)
         array.push(fBot, b)
