@@ -187,6 +187,7 @@ avBodyAtr = input.float(0.30, "② เนื้อเทียน ≥ × ATR(14)
 avExtLen  = input.int(6, "③ ต้องเป็นยอด/ฐานของ (แท่ง)", minval=2, group=grpV)
 avMaxH    = input.float(2.0, "④ ความสูงโซนสูงสุด × ATR", step=0.1, group=grpV)
 avKill    = input.float(0.6, "⑥ โซนตายเมื่อปิดเลยขอบ × ATR", step=0.1, group=grpV)
+avHide    = input.float(5.0, "ซ่อนโซนที่ห่างราคาเกิน × ATR", step=0.5, group=grpV)
 avReqExt  = input.bool(false, "⑤ กรองเพิ่ม: EXT (ชิดสุดของ 100 แท่ง)", group=grpV)
 avReqSwp  = input.bool(false, "⑤ กรองเพิ่ม: SWEEP (แหย่เลยสวิงเก่าแล้วปิดกลับ)", group=grpV)
 avReqPos  = input.bool(false, "⑤ กรองเพิ่ม: POS (ซ้อนเส้น positioning)", group=grpV)
@@ -228,6 +229,7 @@ var float[]  zTp  = array.new_float()
 var float[]  zBt  = array.new_float()
 var float[]  zAt  = array.new_float()
 var int[]    zTc  = array.new_int()
+var int[]    zSt  = array.new_int()     // 0 = เพิ่งเกิด (ยังไม่ออกจากโซน) • 1 = ออกไปแล้ว รอทดสอบ • 2 = กำลังถูกทดสอบ
 var int[]    zId  = array.new_int()
 var int[]    zBi  = array.new_int()
 var float[]  tVal = array.new_float()
@@ -247,6 +249,7 @@ f_zDel(int i) =>
     array.remove(zBt, i)
     array.remove(zAt, i)
     array.remove(zTc, i)
+    array.remove(zSt, i)
     array.remove(zId, i)
     array.remove(zBi, i)
     0
@@ -263,14 +266,34 @@ if avActive and newHtf
             if dead
                 f_zDel(i)
             else
-                touch = k == 1 ? (hH >= b and hC <= t) : (hL <= t and hC >= b)
-                if touch
-                    array.set(zTc, i, array.get(zTc, i) + 1)
-                    array.push(tVal, k == 1 ? math.min(hH, t) : math.max(hL, b))
-                    array.push(tId, array.get(zId, i))
-                    while array.size(tVal) > 300
-                        array.shift(tVal)
-                        array.shift(tId)
+                // นับ "ครั้งที่ถูกทดสอบ" เป็นรอบการเข้า-ออก ไม่ใช่นับทุกแท่งที่อยู่ในโซน
+                //   ต้องออกจากโซนก่อน (แท่ง TF ใหญ่ทั้งแท่งอยู่นอกโซน) แล้วกลับเข้ามาแตะ + ปิดไม่ทะลุ = 1 ครั้ง
+                touch   = k == 1 ? (hH >= b and hC <= t) : (hL <= t and hC >= b)
+                outside = k == 1 ? hH < b : hL > t
+                st      = array.get(zSt, i)
+                ext     = k == 1 ? math.min(hH, t) : math.max(hL, b)
+                if st == 0
+                    if outside
+                        array.set(zSt, i, 1)
+                else if st == 1
+                    if touch
+                        array.set(zTc, i, array.get(zTc, i) + 1)
+                        array.set(zSt, i, 2)
+                        array.push(tVal, ext)
+                        array.push(tId, array.get(zId, i))
+                        while array.size(tVal) > 300
+                            array.shift(tVal)
+                            array.shift(tId)
+                else
+                    if touch and array.size(tId) > 0
+                        // ยังอยู่ในรอบเดิม → เก็บปลายไส้ที่ลึกที่สุดของรอบนี้
+                        id = array.get(zId, i)
+                        for j = array.size(tId) - 1 to 0
+                            if array.get(tId, j) == id
+                                array.set(tVal, j, k == 1 ? math.max(array.get(tVal, j), ext) : math.min(array.get(tVal, j), ext))
+                                break
+                    else if outside
+                        array.set(zSt, i, 1)
     // 2) โซนใหม่ (①–④ ผ่านแล้วจากฝั่ง TF ใหญ่ • ⑤ กรองเพิ่มเมื่อเปิด)
     if hK != 0 and not na(hT) and not na(hAtr)
         anyReq = avReqExt or avReqSwp or avReqPos
@@ -281,6 +304,7 @@ if avActive and newHtf
             array.push(zBt, hB)
             array.push(zAt, hAtr)
             array.push(zTc, 0)
+            array.push(zSt, 0)
             array.push(zId, zNext)
             array.push(zBi, bar_index)
             zNext += 1
@@ -316,6 +340,8 @@ if avActive and array.size(zK) > 0
     dnI = array.new_int()
     for i = 0 to array.size(zK) - 1
         v = f_zLine(i)
+        if not na(hAtr) and math.abs(v - close) > avHide * hAtr
+            continue
         if v >= close
             array.push(upD, v - close)
             array.push(upI, i)
@@ -338,8 +364,10 @@ colA = color.rgb(239, 83, 80)
 colV = color.rgb(38, 166, 154)
 
 // ═══════════════════════ รวมเส้นเป็น array ═══════════════════════
-f_push(float[] P, string[] N, color[] K, int[] W, bool[] D, float v, string n, color c, int w, bool d) =>
+f_push(float[] P, string[] N, color[] K, int[] W, bool[] D, float[] LO, float[] HI, float v, string n, color c, int w, bool d, float lo, float hi) =>
     if not na(v)
+        array.push(LO, na(lo) ? v : lo)
+        array.push(HI, na(hi) ? v : hi)
         array.push(P, v)
         array.push(N, n)
         array.push(K, c)
@@ -351,20 +379,22 @@ keyP = array.new_float()
 keyN = array.new_string()
 keyK = array.new_color()
 keyW = array.new_int()
+keyLo = array.new_float()   // ขอบล่าง/บนของสิ่งที่เส้นนี้แทน (A/V = ขอบโซน • positioning = เท่ากับเส้น)
+keyHi = array.new_float()
 keyD = array.new_bool()      // true = วาดเส้นเต็มแบบ positioning • false = A/V (วาดเป็นโซนแยก)
 if matched and hasD
-    f_push(keyP, keyN, keyK, keyW, keyD, flipL, "Gamma Flip",    color.fuchsia, 2, true)
-    f_push(keyP, keyN, keyK, keyW, keyD, callL, "Call Wall",     color.red,     2, true)
-    f_push(keyP, keyN, keyK, keyW, keyD, putL,  "Put Wall",      color.green,   2, true)
-    f_push(keyP, keyN, keyK, keyW, keyD, mpL,   "Max Pain",      color.yellow,  2, true)
-    f_push(keyP, keyN, keyK, keyW, keyD, gexCL, "GEX Call Wall", color.orange,  1, true)
-    f_push(keyP, keyN, keyK, keyW, keyD, gexPL, "GEX Put Wall",  color.aqua,    1, true)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, flipL, "Gamma Flip",    color.fuchsia, 2, true, na, na)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, callL, "Call Wall",     color.red,     2, true, na, na)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, putL,  "Put Wall",      color.green,   2, true, na, na)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, mpL,   "Max Pain",      color.yellow,  2, true, na, na)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, gexCL, "GEX Call Wall", color.orange,  1, true, na, na)
+    f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, gexPL, "GEX Put Wall",  color.aqua,    1, true, na, na)
 if array.size(selI) > 0
     for j = 0 to array.size(selI) - 1
         ii = array.get(selI, j)
         k  = array.get(zK, ii)
         tc = array.get(zTc, ii)
-        f_push(keyP, keyN, keyK, keyW, keyD, array.get(selV, j), (k == 1 ? "A-" : "V-") + avTfName + (tc > 0 ? " ×" + str.tostring(tc) : ""), k == 1 ? colA : colV, 1, false)
+        f_push(keyP, keyN, keyK, keyW, keyD, keyLo, keyHi, array.get(selV, j), (k == 1 ? "A-" : "V-") + avTfName + (tc > 0 ? " ×" + str.tostring(tc) : ""), k == 1 ? colA : colV, 1, false, array.get(zBt, ii), array.get(zTp, ii))
 nKeys = array.size(keyP)
 
 // ═══════════════════════ วาดเส้น + ป้าย (แท่งล่าสุด) ═══════════════════════
@@ -405,7 +435,8 @@ if barstate.islast
                     txt = array.get(keyN, i)
                     if i < nKeys - 1
                         for j = i + 1 to nKeys - 1
-                            if not array.get(used, j) and math.abs(array.get(keyP, j) - v) <= v * mergePct
+                            tol = v * mergePct
+                            if not array.get(used, j) and array.get(keyLo, j) <= array.get(keyHi, i) + tol and array.get(keyHi, j) >= array.get(keyLo, i) - tol
                                 txt := txt + " · " + array.get(keyN, j)
                                 array.set(used, j, true)
                     txt := txt + " " + str.tostring(v, format.mintick)
